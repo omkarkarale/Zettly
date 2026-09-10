@@ -6,6 +6,40 @@ html, body {
   overflow: hidden;
 }
 
+/* Universal Hideable / Auto-Hiding Scrollbars Everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease;
+}
+
+*:hover {
+  scrollbar-color: var(--card-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.25s ease;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--gray);
+}
+
 /* App Layout Root */
 .app-layout-root {
   display: flex;
@@ -608,15 +642,6 @@ html, body {
   flex-shrink: 0;
 }
 
-.obsidian-tab-strip::-webkit-scrollbar {
-  height: 3px;
-}
-
-.obsidian-tab-strip::-webkit-scrollbar-thumb {
-  background: var(--lightgray);
-  border-radius: 2px;
-}
-
 .obsidian-tab-item {
   display: flex;
   align-items: center;
@@ -1018,15 +1043,6 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.slash-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.slash-list::-webkit-scrollbar-thumb {
-  background: var(--lightgray);
-  border-radius: 2px;
 }
 
 .slash-item {
