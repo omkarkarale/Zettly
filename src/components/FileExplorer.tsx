@@ -364,10 +364,6 @@ export function FileExplorer({
 
   return (
     <aside class="sidebar-explorer">
-      <div class="explorer-header">
-        <span class="explorer-title">Explorer</span>
-      </div>
-
       <div class="explorer-search">
         <SearchIcon />
         <input

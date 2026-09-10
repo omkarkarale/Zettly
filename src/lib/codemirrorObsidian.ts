@@ -311,3 +311,4 @@ export function createObsidianExtensions(options: {
     listenerExtension,
   ]
 }
+

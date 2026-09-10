@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks"
-import { SproutIcon, RepoIcon, SyncIcon, PullIcon, PlusIcon } from "./components/Icons"
+import { SproutIcon, RepoIcon, PlusIcon } from "./components/Icons"
 import { ThemeToggle } from "./components/ThemeToggle"
 import { LoginCard } from "./components/LoginCard"
 import { RepoModal } from "./components/RepoModal"
@@ -64,6 +64,7 @@ export function App() {
   const [isSyncing, setIsSyncing] = useState(false)
   const [isPulling, setIsPulling] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: "info" | "success" | "error" } | null>(null)
+  const [targetHeading, setTargetHeading] = useState<{ text: string; level: number; timestamp: number } | null>(null)
 
   const showToast = (message: string, type: "info" | "success" | "error" = "success") => {
     setToast({ message, type })
@@ -759,37 +760,6 @@ export function App() {
         </div>
 
         <div class="header-right">
-          {session && activeRepo && (
-            <div class="header-git-actions">
-              <button
-                class="header-git-btn btn-pull"
-                onClick={handlePull}
-                disabled={isPulling || isSyncing}
-                title="Pull latest changes from GitHub"
-              >
-                <PullIcon class={isPulling ? "spin-icon" : ""} />
-                <span class="git-btn-text">{isPulling ? "Pulling..." : "Pull"}</span>
-              </button>
-
-              <button
-                class={`header-git-btn btn-sync ${draftCount > 0 ? "has-drafts" : ""}`}
-                onClick={handleFullSync}
-                disabled={isSyncing || isPulling}
-                title={
-                  draftCount > 0
-                    ? `Commit & Sync ${draftCount} unpushed draft(s) with Obsidian backup`
-                    : "Sync vault with GitHub remote"
-                }
-              >
-                <SyncIcon class={isSyncing ? "spin-icon" : ""} />
-                <span class="git-btn-text">{isSyncing ? "Syncing..." : "Sync"}</span>
-                {draftCount > 0 && (
-                  <span class="draft-count-badge">{draftCount}</span>
-                )}
-              </button>
-            </div>
-          )}
-
           <ThemeToggle />
 
           {session && (
@@ -935,6 +905,12 @@ export function App() {
                 isObsidianVault={isObsidianVault}
                 onCommitSuccess={handleCommitSuccess}
                 onClose={handleCloseActiveNote}
+                onPull={handlePull}
+                onSync={handleFullSync}
+                isPulling={isPulling}
+                isSyncing={isSyncing}
+                draftCount={draftCount}
+                targetHeading={targetHeading}
               />
             ) : (
               /* Obsidian Default Opening State */
@@ -967,12 +943,12 @@ export function App() {
             )}
           </section>
 
-          {/* Right Column: Outline & Metadata */}
+          {/* Right Column: Outline */}
           <Outline
             content={activeFileData?.content || ""}
-            repoFullName={activeRepo}
-            isObsidianVault={isObsidianVault}
-            filePath={activeFileData?.path || ""}
+            onSelectHeading={(text, level) =>
+              setTargetHeading({ text, level, timestamp: Date.now() })
+            }
           />
         </main>
       )}

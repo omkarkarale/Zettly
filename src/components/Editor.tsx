@@ -24,6 +24,8 @@ import {
   DividerIcon,
   QuoteIcon,
   LinkIcon,
+  SyncIcon,
+  PullIcon,
 } from "./Icons"
 import {
   createObsidianExtensions,
@@ -46,6 +48,12 @@ interface EditorProps {
   isObsidianVault?: boolean
   onCommitSuccess: (newSha: string, updatedContent: string) => void
   onClose?: () => void
+  onPull?: () => void
+  onSync?: () => void
+  isPulling?: boolean
+  isSyncing?: boolean
+  draftCount?: number
+  targetHeading?: { text: string; level: number; timestamp: number } | null
 }
 
 type ViewMode = "edit" | "read"
@@ -56,9 +64,15 @@ export function Editor({
   initialContent,
   sha: _sha,
   token,
-  isObsidianVault = false,
+  isObsidianVault: _isObsidianVault = false,
   onCommitSuccess,
   onClose,
+  onPull,
+  onSync,
+  isPulling = false,
+  isSyncing = false,
+  draftCount = 0,
+  targetHeading,
 }: EditorProps) {
   const [content, setContent] = useState<string>(() => {
     const draft = getDraft(repoFullName, filePath)
@@ -66,12 +80,6 @@ export function Editor({
   })
   const [hasRestoredDraft, setHasRestoredDraft] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>("edit")
-  const [useObsidianFormat, setUseObsidianFormat] = useState(isObsidianVault)
-  const [commitMessage, setCommitMessage] = useState(() =>
-    isObsidianVault
-      ? formatObsidianBackupMessage()
-      : `Update ${filePath.split("/").pop() || "note.md"}`,
-  )
   const [isCommitting, setIsCommitting] = useState(false)
   const [commitSuccess, setCommitSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -99,14 +107,6 @@ export function Editor({
       setHasRestoredDraft(false)
     }
 
-    const filename = filePath.split("/").pop() || "note.md"
-    if (isObsidianVault) {
-      setCommitMessage(formatObsidianBackupMessage())
-      setUseObsidianFormat(true)
-    } else {
-      setCommitMessage(`Update ${filename}`)
-      setUseObsidianFormat(false)
-    }
     setCommitSuccess(false)
     setError(null)
     setIsSlashMenuOpen(false)
@@ -122,7 +122,47 @@ export function Editor({
         isInternalChangeRef.current = false
       }
     }
-  }, [filePath, initialContent, repoFullName, isObsidianVault])
+  }, [filePath, initialContent, repoFullName])
+
+  // Scroll to heading when clicked from Outline
+  useEffect(() => {
+    if (!targetHeading) return
+
+    if (viewMode === "edit" && editorViewRef.current) {
+      const view = editorViewRef.current
+      const doc = view.state.doc
+      const targetText = targetHeading.text.trim().toLowerCase()
+      let foundPos: number | null = null
+
+      for (let i = 1; i <= doc.lines; i++) {
+        const line = doc.line(i)
+        const text = line.text.trim().toLowerCase()
+        if (text.startsWith("#") && text.includes(targetText)) {
+          foundPos = line.from
+          break
+        }
+      }
+
+      if (foundPos !== null) {
+        view.dispatch({
+          selection: { anchor: foundPos },
+          effects: EditorView.scrollIntoView(foundPos, { y: "start", yMargin: 40 }),
+        })
+        view.focus()
+      }
+    } else if (viewMode === "read") {
+      const headers = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".quartz-article h1, .quartz-article h2, .quartz-article h3, .quartz-article h4, .quartz-article h5, .quartz-article h6",
+        ),
+      )
+      const targetText = targetHeading.text.trim().toLowerCase()
+      const match = headers.find((h) => h.textContent?.trim().toLowerCase().includes(targetText))
+      if (match) {
+        match.scrollIntoView({ behavior: "smooth", block: "start" })
+      }
+    }
+  }, [targetHeading, viewMode])
 
   // Is content different from GitHub remote
   const isDirty = content !== initialContent
@@ -201,7 +241,6 @@ export function Editor({
   useEffect(() => {
     if (!editorContainerRef.current || viewMode !== "edit") return
 
-    // Clean up existing instance if any
     if (editorViewRef.current) {
       editorViewRef.current.destroy()
       editorViewRef.current = null
@@ -284,18 +323,7 @@ export function Editor({
     }
   }
 
-  // Toggle Obsidian format
-  const toggleObsidianFormat = (enable: boolean) => {
-    setUseObsidianFormat(enable)
-    if (enable) {
-      setCommitMessage(formatObsidianBackupMessage())
-    } else {
-      const filename = filePath.split("/").pop() || "note.md"
-      setCommitMessage(`Update ${filename}`)
-    }
-  }
-
-  // Commit & Push note to GitHub
+  // Direct Push in Obsidian Backup format (no custom msg prompt, clean and automatic)
   const handleCommit = async () => {
     if (!isDirty || isCommitting) return
     setIsCommitting(true)
@@ -304,10 +332,7 @@ export function Editor({
 
     try {
       const [owner, repo] = repoFullName.split("/")
-      const msg =
-        (useObsidianFormat
-          ? formatObsidianBackupMessage()
-          : commitMessage.trim()) || `Update ${filePath.split("/").pop()}`
+      const msg = formatObsidianBackupMessage()
 
       const filesToCommit = [{ path: filePath, content }]
       const result = await atomicCommitVault(token, owner, repo, filesToCommit, msg)
@@ -365,18 +390,15 @@ export function Editor({
       <div class="editor-header">
         <div class="editor-file-info">
           <span class="editor-filepath">{filePath}</span>
-          {isDirty ? (
+          {/* Show nothing when synced; show only if unsaved draft or restored */}
+          {isDirty && (
             <span class="status-pill status-draft" title="Draft saved in localStorage">
               🟡 Unsaved Draft
-            </span>
-          ) : (
-            <span class="status-pill status-synced" title="Synchronized with GitHub">
-              🟢 Synced
             </span>
           )}
           {hasRestoredDraft && (
             <span class="status-pill status-restored">
-              Draft Restored from LocalStorage
+              Draft Restored
             </span>
           )}
         </div>
@@ -613,7 +635,7 @@ export function Editor({
 
       {commitSuccess && (
         <div class="editor-alert editor-alert-success">
-          <span>✓ Successfully committed & pushed to GitHub. Local draft cleared!</span>
+          <span>✓ Pushed to GitHub in Obsidian format!</span>
           <button onClick={() => setCommitSuccess(false)}>✕</button>
         </div>
       )}
@@ -645,70 +667,60 @@ export function Editor({
         )}
       </div>
 
-      {/* Bottom Commit & Push Action Bar */}
+      {/* Bottom Action Bar: Push, Sync, Pull & Word Stats */}
       <div class="commit-action-bar">
-        <div class="commit-input-group">
-          {isObsidianVault && (
-            <button
-              type="button"
-              class={`btn-format-toggle ${useObsidianFormat ? "active" : ""}`}
-              onClick={() => toggleObsidianFormat(!useObsidianFormat)}
-              title={
-                useObsidianFormat
-                  ? "Using Obsidian Git 'vault backup: YYYY-MM-DD HH:mm:ss' format. Click to type custom message."
-                  : "Click to use standard Obsidian Git vault backup format."
-              }
-            >
-              {useObsidianFormat ? "⚡ Obsidian Format" : "✏️ Custom Msg"}
-            </button>
-          )}
-
-          <div class="commit-input-wrapper">
-            <input
-              type="text"
-              class="commit-message-input"
-              value={commitMessage}
-              onInput={(e) => {
-                setCommitMessage((e.target as HTMLInputElement).value)
-                setUseObsidianFormat(false)
-              }}
-              placeholder="Commit message (e.g. Update note ideas)"
-              disabled={!isDirty || isCommitting}
-            />
-            {useObsidianFormat && (
-              <button
-                type="button"
-                class="btn-refresh-timestamp"
-                onClick={() => setCommitMessage(formatObsidianBackupMessage())}
-                title="Update timestamp to now"
-              >
-                ↻
-              </button>
-            )}
-          </div>
-
+        <div class="bottom-git-actions">
           <button
-            class="btn-commit-push"
+            type="button"
+            class="bottom-git-btn btn-push"
             onClick={handleCommit}
             disabled={!isDirty || isCommitting}
             title={
               isDirty
-                ? "Commit and push changes to GitHub (Ctrl+S)"
-                : "No changes to commit"
+                ? "Push note to GitHub in Obsidian format (Ctrl+S)"
+                : "No changes to push"
             }
           >
             {isCommitting ? (
               <>
-                <span
-                  class="spinner"
-                  style={{ width: "14px", height: "14px" }}
-                ></span>
-                Pushing...
+                <span class="spinner" style={{ width: "13px", height: "13px" }}></span>
+                <span>Pushing...</span>
               </>
             ) : (
-              <>↑ Commit & Push</>
+              <>
+                <span>↑ Push</span>
+              </>
             )}
           </button>
+
+          {onSync && (
+            <button
+              type="button"
+              class={`bottom-git-btn btn-sync ${(draftCount || 0) > 0 ? "has-drafts" : ""}`}
+              onClick={onSync}
+              disabled={isSyncing || isPulling}
+              title="Sync all vault drafts with GitHub"
+            >
+              <SyncIcon class={isSyncing ? "spin-icon" : ""} />
+              <span>{isSyncing ? "Syncing..." : "Sync"}</span>
+              {(draftCount || 0) > 0 && (
+                <span class="draft-count-badge">{draftCount}</span>
+              )}
+            </button>
+          )}
+
+          {onPull && (
+            <button
+              type="button"
+              class="bottom-git-btn btn-pull"
+              onClick={onPull}
+              disabled={isPulling || isSyncing}
+              title="Pull latest changes from GitHub"
+            >
+              <PullIcon class={isPulling ? "spin-icon" : ""} />
+              <span>{isPulling ? "Pulling..." : "Pull"}</span>
+            </button>
+          )}
         </div>
 
         <div class="note-stats">
