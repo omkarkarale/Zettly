@@ -17,6 +17,9 @@ import {
   listDraftPaths,
   clearAllDrafts,
   getDraft,
+  saveDraft,
+  clearDraft,
+  renameDraft,
   formatObsidianBackupMessage,
 } from "./lib/storage"
 import {
@@ -173,6 +176,102 @@ export function App() {
       content: `# ${title}\n\n`,
       sha: "",
     })
+  }
+
+  // 4b. Rename Note
+  const handleRenameFile = (oldPath: string, newPath: string) => {
+    if (!activeRepo) return
+    if (repoTree.some((t) => t.path.toLowerCase() === newPath.toLowerCase())) {
+      showToast(`A note named "${newPath.split("/").pop()}" already exists`, "error")
+      return
+    }
+
+    setRepoTree((prev) =>
+      prev.map((t) => (t.path === oldPath ? { ...t, path: newPath } : t)),
+    )
+    renameDraft(activeRepo, oldPath, newPath)
+    refreshDrafts()
+
+    if (selectedPath === oldPath) {
+      setSelectedPath(newPath)
+      setActiveFileData((prev) => (prev ? { ...prev, path: newPath } : null))
+    }
+
+    showToast(`✓ Renamed to ${newPath.split("/").pop()}`, "success")
+  }
+
+  // 4c. Duplicate Note
+  const handleDuplicateFile = async (sourcePath: string) => {
+    if (!session || !activeRepo) return
+    const [owner, name] = activeRepo.split("/")
+
+    const parts = sourcePath.split("/")
+    const oldFileName = parts[parts.length - 1]
+    const baseTitle = oldFileName.replace(/\.md$/, "")
+    const folder = parts.slice(0, -1).join("/")
+
+    let copyTitle = `${baseTitle} (Copy)`
+    let candidate = folder ? `${folder}/${copyTitle}.md` : `${copyTitle}.md`
+    let counter = 2
+    while (repoTree.some((t) => t.path.toLowerCase() === candidate.toLowerCase())) {
+      copyTitle = `${baseTitle} (Copy ${counter})`
+      candidate = folder ? `${folder}/${copyTitle}.md` : `${copyTitle}.md`
+      counter++
+    }
+
+    let fileContent = `# ${copyTitle}\n\n`
+    if (activeFileData && activeFileData.path === sourcePath) {
+      fileContent = activeFileData.content
+    } else {
+      const draftContent = getDraft(activeRepo, sourcePath)
+      if (draftContent !== null) {
+        fileContent = draftContent
+      } else {
+        try {
+          const remoteData = await fetchFileContent(session.token, owner, name, sourcePath)
+          fileContent = remoteData.content
+        } catch {
+          // fallback
+        }
+      }
+    }
+
+    saveDraft(activeRepo, candidate, fileContent)
+    refreshDrafts()
+
+    setRepoTree((prev) => [
+      ...prev,
+      {
+        path: candidate,
+        type: "blob",
+        mode: "100644",
+        sha: "",
+      },
+    ])
+
+    setSelectedPath(candidate)
+    setActiveFileData({
+      path: candidate,
+      content: fileContent,
+      sha: "",
+    })
+
+    showToast(`✓ Duplicated as ${copyTitle}`, "success")
+  }
+
+  // 4d. Delete Note
+  const handleDeleteFile = (filePath: string) => {
+    if (!activeRepo) return
+    setRepoTree((prev) => prev.filter((t) => t.path !== filePath))
+    clearDraft(activeRepo, filePath)
+    refreshDrafts()
+
+    if (selectedPath === filePath) {
+      setSelectedPath(null)
+      setActiveFileData(null)
+    }
+
+    showToast(`✓ Removed note ${filePath.split("/").pop()}`, "info")
   }
 
   // 5. Quick search / Go to file focus
@@ -466,6 +565,10 @@ export function App() {
             isLoading={isLoadingTree}
             onSelectFile={handleSelectFile}
             onCreateFile={handleCreateNewNote}
+            onRenameFile={handleRenameFile}
+            onDuplicateFile={handleDuplicateFile}
+            onDeleteFile={handleDeleteFile}
+            onShowToast={showToast}
           />
 
           {/* Center Column: Editor or Obsidian Default Opening Screen */}

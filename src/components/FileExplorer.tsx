@@ -1,4 +1,4 @@
-import { useState, useMemo } from "preact/hooks"
+import { useState, useMemo, useRef, useEffect } from "preact/hooks"
 import { RepoTreeItem } from "../lib/github"
 import { hasDraft } from "../lib/storage"
 import {
@@ -7,6 +7,11 @@ import {
   ChevronIcon,
   SearchIcon,
   PlusIcon,
+  MoreIcon,
+  EditIcon,
+  CopyIcon,
+  LinkIcon,
+  TrashIcon,
 } from "./Icons"
 
 export interface TreeNode {
@@ -23,6 +28,10 @@ interface FileExplorerProps {
   isLoading?: boolean
   onSelectFile: (path: string) => void
   onCreateFile: (folderPath: string) => void
+  onRenameFile?: (oldPath: string, newPath: string) => void
+  onDuplicateFile?: (path: string) => void
+  onDeleteFile?: (path: string) => void
+  onShowToast?: (message: string, type?: "info" | "success" | "error") => void
 }
 
 function buildNestedTree(items: RepoTreeItem[]): TreeNode[] {
@@ -82,17 +91,60 @@ function TreeItemView({
   selectedPath,
   repoFullName,
   onSelectFile,
+  onCreateFile,
+  onOpenContextMenu,
+  renamingPath,
+  onCommitRename,
   depth = 0,
 }: {
   node: TreeNode
   selectedPath: string | null
   repoFullName: string
   onSelectFile: (path: string) => void
+  onCreateFile: (folderPath: string) => void
+  onOpenContextMenu: (e: MouseEvent, node: TreeNode) => void
+  renamingPath: string | null
+  onCommitRename: (oldPath: string, newName: string) => void
   depth?: number
 }) {
   const [open, setOpen] = useState(false)
   const isSelected = selectedPath === node.path
   const isDraft = hasDraft(repoFullName, node.path)
+  const isRenaming = renamingPath === node.path
+
+  const [renameText, setRenameText] = useState(node.name.replace(/\.md$/, ""))
+  const renameInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isRenaming) {
+      setRenameText(node.name.replace(/\.md$/, ""))
+      setTimeout(() => {
+        if (renameInputRef.current) {
+          renameInputRef.current.focus()
+          renameInputRef.current.select()
+        }
+      }, 50)
+    }
+  }, [isRenaming, node.name])
+
+  const handleRenameSubmit = () => {
+    const trimmed = renameText.trim()
+    if (trimmed && trimmed !== node.name.replace(/\.md$/, "")) {
+      onCommitRename(node.path, trimmed)
+    } else {
+      onCommitRename(node.path, "") // cancel
+    }
+  }
+
+  const handleRenameKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      handleRenameSubmit()
+    } else if (e.key === "Escape") {
+      e.preventDefault()
+      onCommitRename(node.path, "") // cancel
+    }
+  }
 
   if (node.type === "tree") {
     return (
@@ -101,10 +153,40 @@ function TreeItemView({
           class="tree-node tree-folder"
           style={{ paddingLeft: `${depth * 14 + 10}px` }}
           onClick={() => setOpen(!open)}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            onOpenContextMenu(e, node)
+          }}
         >
           <ChevronIcon open={open} />
           <FolderIcon />
           <span class="tree-label">{node.name}</span>
+
+          {/* Outline-inspired Folder Hover Actions */}
+          <div class="tree-actions-hover" onClick={(e) => e.stopPropagation()}>
+            <button
+              class="tree-action-btn"
+              title={`Create note inside ${node.name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                setOpen(true)
+                onCreateFile(node.path)
+              }}
+            >
+              <PlusIcon />
+            </button>
+
+            <button
+              class="tree-action-btn"
+              title="Folder options"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenContextMenu(e, node)
+              }}
+            >
+              <MoreIcon />
+            </button>
+          </div>
         </div>
 
         {open && node.children && (
@@ -116,6 +198,10 @@ function TreeItemView({
                 selectedPath={selectedPath}
                 repoFullName={repoFullName}
                 onSelectFile={onSelectFile}
+                onCreateFile={onCreateFile}
+                onOpenContextMenu={onOpenContextMenu}
+                renamingPath={renamingPath}
+                onCommitRename={onCommitRename}
                 depth={depth + 1}
               />
             ))}
@@ -132,12 +218,53 @@ function TreeItemView({
     <div
       class={`tree-node tree-file ${isSelected ? "tree-selected" : ""} ${!isMd ? "tree-file-other" : ""}`}
       style={{ paddingLeft: `${depth * 14 + 26}px` }}
-      onClick={() => onSelectFile(node.path)}
+      onClick={() => {
+        if (!isRenaming) onSelectFile(node.path)
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onOpenContextMenu(e, node)
+      }}
       title={node.path}
     >
       <FileIcon />
-      <span class="tree-label">{node.name.replace(/\.md$/, "")}</span>
-      {isDraft && <span class="draft-indicator" title="Unsaved draft in localStorage">●</span>}
+
+      {isRenaming ? (
+        <input
+          ref={renameInputRef}
+          type="text"
+          class="tree-rename-input"
+          value={renameText}
+          onClick={(e) => e.stopPropagation()}
+          onInput={(e) => setRenameText((e.target as HTMLInputElement).value)}
+          onKeyDown={handleRenameKeyDown}
+          onBlur={handleRenameSubmit}
+        />
+      ) : (
+        <span class="tree-label">{node.name.replace(/\.md$/, "")}</span>
+      )}
+
+      {isDraft && !isRenaming && (
+        <span class="draft-indicator" title="Unsaved draft in localStorage">
+          ●
+        </span>
+      )}
+
+      {/* Outline-inspired File Hover Actions */}
+      {!isRenaming && (
+        <div class="tree-actions-hover" onClick={(e) => e.stopPropagation()}>
+          <button
+            class="tree-action-btn"
+            title="Note options"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenContextMenu(e, node)
+            }}
+          >
+            <MoreIcon />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -149,9 +276,34 @@ export function FileExplorer({
   isLoading,
   onSelectFile,
   onCreateFile,
+  onRenameFile,
+  onDuplicateFile,
+  onDeleteFile,
+  onShowToast,
 }: FileExplorerProps) {
   const [query, setQuery] = useState("")
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    node: TreeNode
+  } | null>(null)
+
   const nestedTree = useMemo(() => buildNestedTree(tree), [tree])
+
+  // Close context menu on outside click or escape
+  useEffect(() => {
+    const handleGlobalClick = () => setContextMenu(null)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null)
+    }
+    window.addEventListener("click", handleGlobalClick)
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      window.removeEventListener("click", handleGlobalClick)
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [])
 
   // Filter tree when searching
   const filteredTree = useMemo(() => {
@@ -177,6 +329,29 @@ export function FileExplorer({
 
     return filterNodes(nestedTree)
   }, [nestedTree, query])
+
+  const handleOpenContextMenu = (e: MouseEvent, node: TreeNode) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      node,
+    })
+  }
+
+  const handleCommitRename = (oldPath: string, newName: string) => {
+    setRenamingPath(null)
+    if (!newName) return
+
+    const parts = oldPath.split("/")
+    parts[parts.length - 1] = `${newName}.md`
+    const newPath = parts.join("/")
+
+    if (newPath !== oldPath && onRenameFile) {
+      onRenameFile(oldPath, newPath)
+    }
+  }
 
   return (
     <aside class="sidebar-explorer">
@@ -223,10 +398,119 @@ export function FileExplorer({
               selectedPath={selectedPath}
               repoFullName={repoFullName}
               onSelectFile={onSelectFile}
+              onCreateFile={onCreateFile}
+              onOpenContextMenu={handleOpenContextMenu}
+              renamingPath={renamingPath}
+              onCommitRename={handleCommitRename}
             />
           ))
         )}
       </div>
+
+      {/* Floating Context Menu */}
+      {contextMenu && (
+        <div
+          class="tree-context-menu"
+          style={{
+            top: `${Math.min(contextMenu.y, window.innerHeight - 230)}px`,
+            left: `${Math.min(contextMenu.x, window.innerWidth - 190)}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {contextMenu.node.type === "blob" ? (
+            <>
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  setRenamingPath(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <EditIcon />
+                <span>Rename</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  onDuplicateFile?.(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <CopyIcon />
+                <span>Duplicate</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  const title = contextMenu.node.name.replace(/\.md$/, "")
+                  navigator.clipboard.writeText(`[[${title}]]`)
+                  onShowToast?.(`✓ Copied [[${title}]] to clipboard`, "info")
+                  setContextMenu(null)
+                }}
+              >
+                <LinkIcon />
+                <span>Copy Wikilink</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  navigator.clipboard.writeText(contextMenu.node.path)
+                  onShowToast?.(`✓ Copied relative path to clipboard`, "info")
+                  setContextMenu(null)
+                }}
+              >
+                <FileIcon />
+                <span>Copy Path</span>
+              </button>
+
+              <div class="context-menu-divider" />
+
+              <button
+                class="context-menu-item menu-item-danger"
+                onClick={() => {
+                  const title = contextMenu.node.name.replace(/\.md$/, "")
+                  if (window.confirm(`Delete "${title}"?`)) {
+                    onDeleteFile?.(contextMenu.node.path)
+                  }
+                  setContextMenu(null)
+                }}
+              >
+                <TrashIcon />
+                <span>Delete</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  onCreateFile(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <PlusIcon />
+                <span>New Note Inside</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  navigator.clipboard.writeText(contextMenu.node.path)
+                  onShowToast?.(`✓ Copied folder path to clipboard`, "info")
+                  setContextMenu(null)
+                }}
+              >
+                <FolderIcon />
+                <span>Copy Path</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </aside>
   )
 }
+

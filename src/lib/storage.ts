@@ -106,6 +106,15 @@ export function hasDraft(repoFullName: string, filePath: string): boolean {
   return Boolean(getDraft(repoFullName, filePath))
 }
 
+export function renameDraft(repoFullName: string, oldPath: string, newPath: string): void {
+  const content = getDraft(repoFullName, oldPath)
+  if (content !== null) {
+    saveDraft(repoFullName, newPath, content)
+    clearDraft(repoFullName, oldPath)
+  }
+}
+
+
 // List all files that have unpushed drafts in this repository
 export function listDraftPaths(repoFullName: string): string[] {
   const prefix = `${DRAFT_PREFIX}${repoFullName}:`
