@@ -1504,7 +1504,7 @@
 .tree-actions-hover {
   display: none;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   margin-left: auto;
 }
 
@@ -1517,7 +1517,7 @@
   border: none;
   color: var(--gray);
   cursor: pointer;
-  padding: 2px;
+  padding: 3px 4px;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -1531,8 +1531,8 @@
 }
 
 .tree-action-btn svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 
 /* Tree Rename Inline Input */

@@ -214,11 +214,11 @@ export function PlusIcon(props: JSX.SVGAttributes<SVGSVGElement>) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="14"
-      height="14"
+      width="16"
+      height="16"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="2.2"
       strokeLinecap="round"
       strokeLinejoin="round"
       {...props}
@@ -271,14 +271,14 @@ export function MoreIcon(props: JSX.SVGAttributes<SVGSVGElement>) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="15"
-      height="15"
+      width="16"
+      height="16"
       fill="currentColor"
       {...props}
     >
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="6" cy="12" r="1.5" />
-      <circle cx="18" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="2" />
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="19" cy="12" r="2" />
     </svg>
   )
 }
