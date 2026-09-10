@@ -22,7 +22,8 @@ export interface FileData {
 
 export interface AtomicFile {
   path: string
-  content: string
+  content?: string
+  sha?: string | null
 }
 
 // 1. Auth Status & OAuth Initiation
@@ -212,15 +213,25 @@ export async function atomicCommitVault(
   // Step 1: Fetch current remote branch head
   const { commitSha, baseTreeSha } = await getBranchHead(token, owner, repo, branch)
 
-  // Step 2: Create a new Tree including all changed files
+  // Step 2: Create a new Tree including all changed files and deletions
   const treeBody = {
     base_tree: baseTreeSha,
-    tree: files.map((f) => ({
-      path: f.path,
-      mode: "100644",
-      type: "blob",
-      content: f.content,
-    })),
+    tree: files.map((f) => {
+      if (f.sha === null || f.content === undefined) {
+        return {
+          path: f.path,
+          mode: "100644",
+          type: "blob",
+          sha: null,
+        }
+      }
+      return {
+        path: f.path,
+        mode: "100644",
+        type: "blob",
+        content: f.content,
+      }
+    }),
   }
 
   const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {

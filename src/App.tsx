@@ -21,6 +21,10 @@ import {
   renameDraft,
   hasDraft,
   formatObsidianBackupMessage,
+  listPendingDeletions,
+  addPendingDeletion,
+  clearPendingDeletion,
+  clearAllPendingDeletions,
 } from "./lib/storage"
 import {
   AuthStatus,
@@ -32,6 +36,7 @@ import {
   atomicCommitVault,
   RepoTreeItem,
   FileData,
+  AtomicFile,
 } from "./lib/github"
 
 export function App() {
@@ -65,11 +70,12 @@ export function App() {
     setTimeout(() => setToast(null), 4500)
   }
 
-  // Refresh draft count from localStorage
+  // Refresh draft count from localStorage (includes both modified drafts and pending deletions)
   const refreshDrafts = () => {
     if (activeRepo) {
       const drafts = listDraftPaths(activeRepo)
-      setDraftCount(drafts.length)
+      const deletions = listPendingDeletions(activeRepo)
+      setDraftCount(drafts.length + deletions.length)
     } else {
       setDraftCount(0)
     }
@@ -181,30 +187,80 @@ export function App() {
     })
   }
 
-  // 4b. Rename Note
-  const handleRenameFile = (oldPath: string, newPath: string) => {
+  // 4b. Rename Note (Syncable with Git)
+  const handleRenameFile = async (oldPath: string, newPath: string) => {
     if (!activeRepo) return
-    if (repoTree.some((t) => t.path.toLowerCase() === newPath.toLowerCase())) {
+    if (repoTree.some((t) => t.path.toLowerCase() === newPath.toLowerCase() && t.path !== oldPath)) {
       showToast(`A note named "${newPath.split("/").pop()}" already exists`, "error")
       return
     }
 
+    const oldName = oldPath.split("/").pop() || oldPath
+    const newName = newPath.split("/").pop() || newPath
+
+    // 1. Get note content to preserve across rename
+    let content = ""
+    if (activeFileData && activeFileData.path === oldPath) {
+      content = activeFileData.content
+    } else {
+      const draft = getDraft(activeRepo, oldPath)
+      if (draft !== null) {
+        content = draft
+      } else if (session) {
+        const [owner, name] = activeRepo.split("/")
+        try {
+          const remote = await fetchFileContent(session.token, owner, name, oldPath)
+          content = remote.content
+        } catch {
+          content = `# ${newName.replace(/\.md$/, "")}\n\n`
+        }
+      }
+    }
+
+    // 2. Update local UI state immediately
     setRepoTree((prev) =>
       prev.map((t) => (t.path === oldPath ? { ...t, path: newPath } : t)),
     )
     setOpenTabs((prev) => prev.map((t) => (t === oldPath ? newPath : t)))
-    renameDraft(activeRepo, oldPath, newPath)
-    refreshDrafts()
-
     if (selectedPath === oldPath) {
       setSelectedPath(newPath)
-      setActiveFileData((prev) => (prev ? { ...prev, path: newPath } : null))
+      setActiveFileData((prev) => (prev ? { ...prev, path: newPath, content } : null))
     }
 
-    showToast(`✓ Renamed to ${newPath.split("/").pop()}`, "success")
+    // 3. Move draft and record pending deletion of oldPath
+    renameDraft(activeRepo, oldPath, newPath)
+    addPendingDeletion(activeRepo, oldPath)
+    refreshDrafts()
+
+    // 4. Directly sync rename to GitHub if session active
+    if (session) {
+      const [owner, name] = activeRepo.split("/")
+      try {
+        await atomicCommitVault(
+          session.token,
+          owner,
+          name,
+          [
+            { path: oldPath, sha: null },
+            { path: newPath, content },
+          ],
+          `rename: ${oldName} -> ${newName}`,
+        )
+        clearPendingDeletion(activeRepo, oldPath)
+        clearDraft(activeRepo, newPath)
+        refreshDrafts()
+        const freshTree = await fetchRepoTree(session.token, owner, name)
+        setRepoTree(freshTree)
+        showToast(`✓ Renamed to ${newName} & synced with Git`, "success")
+      } catch {
+        showToast(`Renamed to ${newName} (queued for next Git Sync)`, "info")
+      }
+    } else {
+      showToast(`✓ Renamed to ${newName}`, "success")
+    }
   }
 
-  // 4d. Delete Note (blocked if note is not empty)
+  // 4d. Delete Note (blocked if note is not empty, syncable with Git)
   const handleDeleteFile = async (filePath: string) => {
     if (!activeRepo) return
     const fileName = filePath.split("/").pop() || filePath
@@ -244,10 +300,9 @@ export function App() {
       return
     }
 
+    // 1. Update local UI state immediately
     setRepoTree((prev) => prev.filter((t) => t.path !== filePath))
     clearDraft(activeRepo, filePath)
-    refreshDrafts()
-
     setOpenTabs((prev) => {
       const updated = prev.filter((t) => t !== filePath)
       if (selectedPath === filePath) {
@@ -262,17 +317,42 @@ export function App() {
       return updated
     })
 
-    showToast(`✓ Deleted empty note ${fileName}`, "info")
+    // 2. Buffer pending deletion for Git
+    addPendingDeletion(activeRepo, filePath)
+    refreshDrafts()
+
+    // 3. Directly sync deletion to GitHub if session active
+    if (session) {
+      const [owner, name] = activeRepo.split("/")
+      try {
+        await atomicCommitVault(
+          session.token,
+          owner,
+          name,
+          [{ path: filePath, sha: null }],
+          `delete: ${fileName}`,
+        )
+        clearPendingDeletion(activeRepo, filePath)
+        refreshDrafts()
+        const freshTree = await fetchRepoTree(session.token, owner, name)
+        setRepoTree(freshTree)
+        showToast(`✓ Deleted ${fileName} & synced with Git`, "info")
+      } catch {
+        showToast(`Deleted ${fileName} (queued for next Git Sync)`, "info")
+      }
+    } else {
+      showToast(`✓ Deleted empty note ${fileName}`, "info")
+    }
   }
 
-  // 4e. Delete Folder (blocked if folder is not empty)
-  const handleDeleteFolder = (folderPath: string) => {
+  // 4e. Delete Folder (blocked if folder is not empty, syncable with Git)
+  const handleDeleteFolder = async (folderPath: string) => {
     const folderName = folderPath.split("/").pop() || folderPath
-    const hasChildren = repoTree.some(
+    const childFiles = repoTree.filter(
       (item) => item.path.startsWith(folderPath + "/") && item.path !== folderPath
     )
 
-    if (hasChildren) {
+    if (childFiles.length > 0) {
       showToast(`Cannot delete "${folderName}": folder is not empty`, "error")
       return
     }
@@ -281,14 +361,48 @@ export function App() {
       return
     }
 
+    // 1. Remove from local tree
     setRepoTree((prev) =>
       prev.filter((item) => item.path !== folderPath && !item.path.startsWith(folderPath + "/"))
     )
-    showToast(`✓ Deleted empty folder "${folderName}"`, "info")
+
+    // 2. Collect any placeholder items on remote to delete
+    const filesToDelete = repoTree
+      .filter((item) => item.path === folderPath || item.path.startsWith(folderPath + "/"))
+      .map((item) => item.path)
+
+    for (const p of filesToDelete) {
+      addPendingDeletion(activeRepo || "", p)
+    }
+    refreshDrafts()
+
+    if (filesToDelete.length > 0 && session && activeRepo) {
+      const [owner, name] = activeRepo.split("/")
+      try {
+        await atomicCommitVault(
+          session.token,
+          owner,
+          name,
+          filesToDelete.map((p) => ({ path: p, sha: null })),
+          `delete folder: ${folderName}`,
+        )
+        for (const p of filesToDelete) {
+          clearPendingDeletion(activeRepo, p)
+        }
+        refreshDrafts()
+        const freshTree = await fetchRepoTree(session.token, owner, name)
+        setRepoTree(freshTree)
+        showToast(`✓ Deleted empty folder "${folderName}" & synced with Git`, "info")
+      } catch {
+        showToast(`Deleted folder "${folderName}" (queued for next Git Sync)`, "info")
+      }
+    } else {
+      showToast(`✓ Deleted empty folder "${folderName}"`, "info")
+    }
   }
 
-  // 4f. Rename Folder
-  const handleRenameFolder = (oldFolderPath: string) => {
+  // 4f. Rename Folder (Syncable with Git)
+  const handleRenameFolder = async (oldFolderPath: string) => {
     const oldName = oldFolderPath.split("/").pop() || oldFolderPath
     const newName = window.prompt(`Rename folder "${oldName}" to:`, oldName)
     if (!newName || !newName.trim() || newName.trim() === oldName) return
@@ -297,6 +411,9 @@ export function App() {
     const parentParts = oldFolderPath.split("/").slice(0, -1)
     const newFolderPath = parentParts.length > 0 ? `${parentParts.join("/")}/${cleanNewName}` : cleanNewName
 
+    const folderFiles = repoTree.filter((item) => item.path.startsWith(oldFolderPath + "/"))
+
+    // 1. Update repoTree and openTabs locally
     setRepoTree((prev) =>
       prev.map((item) => {
         if (item.path === oldFolderPath) {
@@ -328,7 +445,64 @@ export function App() {
       setActiveFileData((prev) => (prev ? { ...prev, path: updatedPath } : null))
     }
 
-    showToast(`✓ Renamed folder to "${cleanNewName}"`, "success")
+    // 2. Prepare file pairs for Git atomic rename
+    const renamePairs: { oldPath: string; newPath: string; content: string }[] = []
+    for (const item of folderFiles) {
+      const targetPath = `${newFolderPath}${item.path.slice(oldFolderPath.length)}`
+      let content = ""
+      if (activeFileData && activeFileData.path === item.path) {
+        content = activeFileData.content
+      } else {
+        const draft = getDraft(activeRepo || "", item.path)
+        if (draft !== null) {
+          content = draft
+        } else if (session && activeRepo) {
+          const [owner, name] = activeRepo.split("/")
+          try {
+            const remote = await fetchFileContent(session.token, owner, name, item.path)
+            content = remote.content
+          } catch {
+            content = ""
+          }
+        }
+      }
+      renamePairs.push({ oldPath: item.path, newPath: targetPath, content })
+      renameDraft(activeRepo || "", item.path, targetPath)
+      addPendingDeletion(activeRepo || "", item.path)
+    }
+    refreshDrafts()
+
+    // 3. Directly sync folder rename to GitHub if session active
+    if (renamePairs.length > 0 && session && activeRepo) {
+      const [owner, name] = activeRepo.split("/")
+      const batch: AtomicFile[] = []
+      for (const pair of renamePairs) {
+        batch.push({ path: pair.oldPath, sha: null })
+        batch.push({ path: pair.newPath, content: pair.content })
+      }
+
+      try {
+        await atomicCommitVault(
+          session.token,
+          owner,
+          name,
+          batch,
+          `rename folder: ${oldName} -> ${cleanNewName}`,
+        )
+        for (const pair of renamePairs) {
+          clearPendingDeletion(activeRepo, pair.oldPath)
+          clearDraft(activeRepo, pair.newPath)
+        }
+        refreshDrafts()
+        const freshTree = await fetchRepoTree(session.token, owner, name)
+        setRepoTree(freshTree)
+        showToast(`✓ Renamed folder to "${cleanNewName}" & synced with Git`, "success")
+      } catch {
+        showToast(`Renamed folder "${cleanNewName}" (queued for next Git Sync)`, "info")
+      }
+    } else {
+      showToast(`✓ Renamed folder to "${cleanNewName}"`, "success")
+    }
   }
 
   // 4g. Create Folder
@@ -355,83 +529,7 @@ export function App() {
     showToast(`Opened "${path.split("/").pop()?.replace(/\.md$/, "")}" to the right`, "info")
   }
 
-  // 4j. Open in New Window
-  const handleOpenInNewWindow = async (path: string) => {
-    let content = ""
-    if (activeFileData && activeFileData.path === path) {
-      content = activeFileData.content
-    } else {
-      const draft = getDraft(activeRepo || "", path)
-      if (draft !== null) {
-        content = draft
-      } else if (session && activeRepo) {
-        const [owner, name] = activeRepo.split("/")
-        try {
-          const remote = await fetchFileContent(session.token, owner, name, path)
-          content = remote.content
-        } catch {
-          content = "# Note\n\n(Could not load remote content)"
-        }
-      }
-    }
-
-    const title = path.split("/").pop()?.replace(/\.md$/, "") || "Note"
-    const newWin = window.open("", "_blank", "width=860,height=700,menubar=no,toolbar=no")
-    if (newWin) {
-      newWin.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>${title} - Zettly</title>
-          <style>
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-              line-height: 1.6;
-              padding: 2.5rem;
-              max-width: 800px;
-              margin: 0 auto;
-              background-color: #161618;
-              color: #f4f4f5;
-            }
-            pre {
-              background: #202022;
-              padding: 1.25rem;
-              border-radius: 8px;
-              white-space: pre-wrap;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-              font-size: 14px;
-              border: 1px solid #2e2e32;
-            }
-            h1 { color: #84a59d; font-size: 1.75rem; margin-top: 0; }
-            .header-bar {
-              border-bottom: 1px solid #2e2e32;
-              padding-bottom: 0.75rem;
-              margin-bottom: 1.5rem;
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              color: #a0a0a5;
-              font-size: 0.85rem;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header-bar">
-            <span><strong>${path}</strong></span>
-            <span>Zettly Standalone Viewer</span>
-          </div>
-          <h1>${title}</h1>
-          <pre>${content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
-        </body>
-        </html>
-      `)
-      newWin.document.close()
-    } else {
-      showToast("Popup blocked. Please allow popups for this site.", "error")
-    }
-  }
-
-  // 4k. Close Tab
+  // 4j. Close Tab
   const handleCloseTab = (tabPath: string, e?: MouseEvent) => {
     if (e) e.stopPropagation()
     setOpenTabs((prev) => {
@@ -508,7 +606,7 @@ export function App() {
     }
   }
 
-  // 9. Git Pull from GitHub (refreshes tree and active file)
+  // 9. Git Pull from GitHub (refreshes tree and active file, preserving local pending deletions)
   const handlePull = async () => {
     if (!session || !activeRepo || isPulling || isSyncing) return
     setIsPulling(true)
@@ -516,7 +614,10 @@ export function App() {
 
     try {
       const tree = await fetchRepoTree(session.token, owner, name)
-      setRepoTree(tree)
+      const pendingDeletions = listPendingDeletions(activeRepo)
+      // Never revive pending deletions on pull
+      const safeTree = tree.filter((t) => !pendingDeletions.includes(t.path))
+      setRepoTree(safeTree)
 
       if (selectedPath) {
         try {
@@ -535,7 +636,7 @@ export function App() {
     }
   }
 
-  // 10. Git Commit & Sync (Obsidian Vault Workflow)
+  // 10. Git Commit & Sync (Obsidian Vault Workflow - commits drafts AND pending deletions)
   const handleFullSync = async () => {
     if (!session || !activeRepo || isSyncing || isPulling) return
     setIsSyncing(true)
@@ -543,16 +644,17 @@ export function App() {
 
     try {
       const draftPaths = listDraftPaths(activeRepo)
+      const pendingDeletions = listPendingDeletions(activeRepo)
 
-      if (draftPaths.length === 0) {
-        // No pending drafts -> just pull latest remote changes
+      if (draftPaths.length === 0 && pendingDeletions.length === 0) {
+        // No pending changes -> pull latest remote changes
         await handlePull()
         showToast("✓ Vault is already up to date with remote", "info")
         return
       }
 
       // Collect all modified files from drafts
-      const filesToCommit: { path: string; content: string }[] = []
+      const filesToCommit: AtomicFile[] = []
       for (const p of draftPaths) {
         const draftContent = getDraft(activeRepo, p)
         if (draftContent !== null) {
@@ -560,7 +662,12 @@ export function App() {
         }
       }
 
-      // Commit strictly the draft note files — never touch .obsidian
+      // Collect all pending deletions (sha: null tells GitHub to remove them from tree)
+      for (const d of pendingDeletions) {
+        filesToCommit.push({ path: d, sha: null })
+      }
+
+      // Commit strictly the draft note files and deletions — never touch .obsidian
       const backupMsg = formatObsidianBackupMessage()
       const result = await atomicCommitVault(
         session.token,
@@ -570,18 +677,19 @@ export function App() {
         backupMsg,
       )
 
-      // Clear all drafts immediately from localStorage!
+      // Clear all drafts and pending deletions immediately from localStorage!
       clearAllDrafts(activeRepo)
+      clearAllPendingDeletions(activeRepo)
       refreshDrafts()
 
-      // Refresh file tree to reflect all newly pushed files
+      // Refresh file tree to reflect all newly pushed files and deletions
       const updatedTree = await fetchRepoTree(session.token, owner, name)
       setRepoTree(updatedTree)
 
       // If active file was among drafts, update its local content and SHA
       if (selectedPath) {
         const matchingDraft = filesToCommit.find((f) => f.path === selectedPath)
-        if (matchingDraft) {
+        if (matchingDraft && matchingDraft.content) {
           setActiveFileData({
             path: selectedPath,
             content: matchingDraft.content,
@@ -590,7 +698,7 @@ export function App() {
         }
       }
 
-      showToast(`✓ Vault Synced: pushed ${draftPaths.length} note(s)!`, "success")
+      showToast(`✓ Vault Synced: pushed ${filesToCommit.length} change(s)!`, "success")
     } catch (err: any) {
       showToast(`Sync failed: ${err.message || "Network error"}`, "error")
     } finally {
@@ -747,7 +855,6 @@ export function App() {
             onSelectFile={handleSelectFile}
             onOpenInNewTab={handleOpenInNewTab}
             onOpenToRight={handleOpenToRight}
-            onOpenInNewWindow={handleOpenInNewWindow}
             onCreateFile={handleCreateNewNote}
             onCreateFolder={handleCreateFolder}
             onRenameFile={handleRenameFile}

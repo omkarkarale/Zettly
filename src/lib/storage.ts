@@ -153,3 +153,48 @@ export function formatObsidianBackupMessage(date = new Date()): string {
 
   return `vault backup: ${y}-${m}-${d} ${h}:${min}:${s}`
 }
+
+// 4. Pending Deletions Buffer (tracks deleted files until committed to GitHub)
+const DELETION_PREFIX = "zettly_pending_del:"
+
+function getDeletionKey(repoFullName: string): string {
+  return `${DELETION_PREFIX}${repoFullName}`
+}
+
+export function listPendingDeletions(repoFullName: string): string[] {
+  try {
+    const raw = localStorage.getItem(getDeletionKey(repoFullName))
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function addPendingDeletion(repoFullName: string, filePath: string): void {
+  try {
+    const current = listPendingDeletions(repoFullName)
+    if (!current.includes(filePath)) {
+      current.push(filePath)
+      localStorage.setItem(getDeletionKey(repoFullName), JSON.stringify(current))
+    }
+  } catch (e) {
+    console.warn("Failed to buffer pending deletion in localStorage", e)
+  }
+}
+
+export function clearPendingDeletion(repoFullName: string, filePath: string): void {
+  try {
+    const current = listPendingDeletions(repoFullName).filter((p) => p !== filePath)
+    localStorage.setItem(getDeletionKey(repoFullName), JSON.stringify(current))
+  } catch (e) {
+    console.warn("Failed to clear pending deletion", e)
+  }
+}
+
+export function clearAllPendingDeletions(repoFullName: string): void {
+  try {
+    localStorage.removeItem(getDeletionKey(repoFullName))
+  } catch (e) {
+    console.warn("Failed to clear all pending deletions", e)
+  }
+}

@@ -9,12 +9,9 @@ import {
   PlusIcon,
   MoreIcon,
   EditIcon,
-  CopyIcon,
-  LinkIcon,
   TrashIcon,
   NewTabIcon,
   SplitIcon,
-  ExternalLinkIcon,
 } from "./Icons"
 
 export interface TreeNode {
@@ -32,7 +29,6 @@ interface FileExplorerProps {
   onSelectFile: (path: string) => void
   onOpenInNewTab: (path: string) => void
   onOpenToRight: (path: string) => void
-  onOpenInNewWindow: (path: string) => void
   onCreateFile: (folderPath: string) => void
   onCreateFolder: (parentFolderPath: string) => void
   onRenameFile: (oldPath: string, newPath: string) => void
@@ -286,7 +282,6 @@ export function FileExplorer({
   onSelectFile,
   onOpenInNewTab,
   onOpenToRight,
-  onOpenInNewWindow,
   onCreateFile,
   onCreateFolder,
   onRenameFile,
@@ -462,17 +457,6 @@ export function FileExplorer({
                 <span>Open to right</span>
               </button>
 
-              <button
-                class="context-menu-item"
-                onClick={() => {
-                  onOpenInNewWindow(contextMenu.node.path)
-                  setContextMenu(null)
-                }}
-              >
-                <ExternalLinkIcon />
-                <span>Open in new window</span>
-              </button>
-
               <div class="context-menu-divider" />
 
               <button
@@ -484,31 +468,6 @@ export function FileExplorer({
               >
                 <EditIcon />
                 <span>Rename</span>
-              </button>
-
-              <button
-                class="context-menu-item"
-                onClick={() => {
-                  const title = contextMenu.node.name.replace(/\.md$/, "")
-                  navigator.clipboard.writeText(`[[${title}]]`)
-                  onShowToast?.(`✓ Copied [[${title}]] to clipboard`, "info")
-                  setContextMenu(null)
-                }}
-              >
-                <LinkIcon />
-                <span>Copy Wikilink</span>
-              </button>
-
-              <button
-                class="context-menu-item"
-                onClick={() => {
-                  navigator.clipboard.writeText(contextMenu.node.path)
-                  onShowToast?.(`✓ Copied relative path to clipboard`, "info")
-                  setContextMenu(null)
-                }}
-              >
-                <CopyIcon />
-                <span>Copy Path</span>
               </button>
 
               <div class="context-menu-divider" />
@@ -559,20 +518,6 @@ export function FileExplorer({
                 >
                   <EditIcon />
                   <span>Rename</span>
-                </button>
-              )}
-
-              {contextMenu.node.path && (
-                <button
-                  class="context-menu-item"
-                  onClick={() => {
-                    navigator.clipboard.writeText(contextMenu.node.path)
-                    onShowToast?.(`✓ Copied folder path to clipboard`, "info")
-                    setContextMenu(null)
-                  }}
-                >
-                  <CopyIcon />
-                  <span>Copy Path</span>
                 </button>
               )}
 
