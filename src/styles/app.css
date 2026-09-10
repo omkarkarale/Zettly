@@ -514,29 +514,39 @@
   border: 1px solid var(--secondary);
 }
 
-.editor-mode-selector {
+.editor-mode-toggle {
   display: flex;
   background: var(--light);
   border: 1px solid var(--card-border);
   border-radius: 8px;
   padding: 2px;
+  gap: 2px;
 }
 
-.mode-btn {
+.mode-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   background: transparent;
   border: none;
-  padding: 0.25rem 0.65rem;
+  padding: 0.3rem 0.65rem;
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--darkgray);
   border-radius: 6px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.mode-btn.active {
+.mode-toggle-btn:hover {
+  color: var(--dark);
+  background: var(--highlight);
+}
+
+.mode-toggle-btn.active {
   background: var(--card-bg);
   color: var(--secondary);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .editor-controls-right {
@@ -762,51 +772,281 @@
   font-size: 0.85rem;
 }
 
+/* Quick Formatting Toolbar */
+.editor-quick-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 1rem;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--lightgray);
+  flex-wrap: wrap;
+  user-select: none;
+  z-index: 10;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--lightgray);
+  margin: 0 0.3rem;
+}
+
+.toolbar-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--darkgray);
+  font-family: var(--headerFont);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 26px;
+  transition: all 0.15s ease;
+}
+
+.toolbar-btn:hover {
+  background: var(--highlight);
+  color: var(--secondary);
+  border-color: var(--card-border);
+}
+
+.toolbar-hint {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--gray);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.toolbar-kbd {
+  font-family: var(--codeFont);
+  background: var(--light);
+  border: 1px solid var(--card-border);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-weight: 700;
+  color: var(--secondary);
+}
+
+/* Editor Panes */
 .editor-panes {
   flex: 1;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
-.editor-panes.mode-split {
-  grid-template-columns: 1fr 1fr;
-}
-
-.editor-panes.mode-edit {
-  grid-template-columns: 1fr;
-}
-
-.editor-panes.mode-preview {
-  grid-template-columns: 1fr;
-}
-
-.pane-editor {
-  border-right: 1px solid var(--lightgray);
+.editor-panes.mode-edit,
+.editor-panes.mode-read {
   height: 100%;
+}
+
+/* Continuous CodeMirror 6 Obsidian Editor */
+.codemirror-editor-wrapper {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background: var(--light);
   display: flex;
   flex-direction: column;
 }
 
-.markdown-textarea {
+.codemirror-container {
   flex: 1;
-  width: 100%;
   height: 100%;
-  border: none;
-  background: var(--card-bg);
-  color: var(--dark);
-  font-family: var(--codeFont);
-  font-size: 0.95rem;
-  line-height: 1.6;
-  padding: 1.5rem;
-  outline: none;
-  resize: none;
+  overflow: hidden;
 }
 
-.pane-preview {
+.codemirror-container .cm-editor {
+  height: 100%;
+  outline: none;
+}
+
+.codemirror-container .cm-scroller {
+  overflow-y: auto;
+}
+
+:root {
+  --obsidian-bold: #d946ef;
+  --obsidian-selection: rgba(59, 130, 246, 0.25);
+}
+
+[data-theme="dark"] {
+  --obsidian-bold: #ff79c6;
+  --obsidian-selection: rgba(66, 153, 225, 0.35);
+}
+
+/* Reading View */
+.pane-reading-view {
+  flex: 1;
   height: 100%;
   overflow-y: auto;
   padding: 2rem 2.5rem;
   background: var(--light);
+}
+
+/* Slash Commands Popover Menu */
+.slash-commands-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  width: 320px;
+  max-height: 280px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.08);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slashMenuFadeIn 0.15s ease;
+}
+
+@keyframes slashMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.slash-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.5rem 0.75rem;
+  background: var(--light);
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.slash-header-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--secondary);
+}
+
+.slash-header-hint {
+  font-size: 0.68rem;
+  color: var(--gray);
+}
+
+.slash-list {
+  overflow-y: auto;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.slash-list::-webkit-scrollbar-thumb {
+  background: var(--lightgray);
+  border-radius: 2px;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--dark);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.1s ease;
+  width: 100%;
+}
+
+.slash-item:hover, .slash-item.selected {
+  background: var(--highlight);
+  color: var(--secondary);
+}
+
+.slash-item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--light);
+  border: 1px solid var(--card-border);
+  color: var(--secondary);
+  flex-shrink: 0;
+}
+
+.slash-item.selected .slash-item-icon {
+  background: var(--secondary);
+  color: #fff;
+  border-color: var(--secondary);
+}
+
+.slash-item-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.slash-item-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-item-desc {
+  font-size: 0.7rem;
+  color: var(--gray);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-item-category {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--gray);
+  background: var(--light);
+  border: 1px solid var(--card-border);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.slash-empty-message {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--gray);
 }
 
 /* Quartz Rendered Article Styling */
@@ -876,18 +1116,77 @@
 }
 
 /* Obsidian Callout in Quartz Preview */
+/* Obsidian Callout in Quartz Preview & Live Preview */
 .callout {
   border-left: 4px solid var(--secondary);
   background: var(--highlight);
   border-radius: 4px;
+  border-radius: 6px;
   padding: 0.75rem 1rem;
   margin: 1rem 0;
+}
+
+.callout-note {
+  border-left-color: var(--secondary);
+  background: var(--highlight);
+}
+
+.callout-tip {
+  border-left-color: #10b981;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.callout-tip .callout-title {
+  color: #059669;
+}
+
+[data-theme="dark"] .callout-tip .callout-title {
+  color: #34d399;
+}
+
+.callout-warning {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.callout-warning .callout-title {
+  color: #d97706;
+}
+
+[data-theme="dark"] .callout-warning .callout-title {
+  color: #fbbf24;
+}
+
+.callout-important {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.callout-important .callout-title {
+  color: #dc2626;
+}
+
+[data-theme="dark"] .callout-important .callout-title {
+  color: #f87171;
 }
 
 .callout-title {
   font-family: var(--headerFont);
   color: var(--secondary);
   margin-bottom: 0.25rem;
+}
+
+/* Obsidian Highlight */
+mark, .obsidian-highlight {
+  background: rgba(250, 204, 21, 0.35);
+  color: inherit;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+[data-theme="dark"] mark, [data-theme="dark"] .obsidian-highlight {
+  background: rgba(234, 179, 8, 0.25);
+  color: #fef08a;
 }
 
 /* Commit Action Bar */

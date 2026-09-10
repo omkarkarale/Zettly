@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "preact/hooks"
 import { marked } from "marked"
+import { EditorView } from "@codemirror/view"
+import { EditorState } from "@codemirror/state"
 import {
   getDraft,
   saveDraft,
@@ -7,6 +9,33 @@ import {
   formatObsidianBackupMessage,
 } from "../lib/storage"
 import { atomicCommitVault } from "../lib/github"
+import {
+  EditIcon,
+  BookIcon,
+  BoldIcon,
+  ItalicIcon,
+  StrikethroughIcon,
+  HighlightIcon,
+  CodeBlockIcon,
+  ListBulletIcon,
+  ListCheckIcon,
+  CalloutIcon,
+  TableIcon,
+  DividerIcon,
+  QuoteIcon,
+  LinkIcon,
+} from "./Icons"
+import {
+  createObsidianExtensions,
+  wrapSelection,
+  toggleLinePrefix,
+  insertSnippet,
+} from "../lib/codemirrorObsidian"
+import {
+  SlashCommandsMenu,
+  SLASH_COMMANDS,
+  type SlashCommand,
+} from "./SlashCommandsMenu"
 
 interface EditorProps {
   repoFullName: string
@@ -19,7 +48,7 @@ interface EditorProps {
   onClose?: () => void
 }
 
-type ViewMode = "split" | "edit" | "preview"
+type ViewMode = "edit" | "read"
 
 export function Editor({
   repoFullName,
@@ -36,26 +65,40 @@ export function Editor({
     return draft !== null ? draft : initialContent
   })
   const [hasRestoredDraft, setHasRestoredDraft] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>("split")
+  const [viewMode, setViewMode] = useState<ViewMode>("edit")
   const [useObsidianFormat, setUseObsidianFormat] = useState(isObsidianVault)
   const [commitMessage, setCommitMessage] = useState(() =>
-    isObsidianVault ? formatObsidianBackupMessage() : `Update ${filePath.split("/").pop() || "note.md"}`,
+    isObsidianVault
+      ? formatObsidianBackupMessage()
+      : `Update ${filePath.split("/").pop() || "note.md"}`,
   )
   const [isCommitting, setIsCommitting] = useState(false)
   const [commitSuccess, setCommitSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Slash commands menu state
+  const [isSlashMenuOpen, setIsSlashMenuOpen] = useState(false)
+  const [slashQuery, setSlashQuery] = useState("")
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0)
+  const [slashMenuPos, setSlashMenuPos] = useState<{ top: number; left: number } | undefined>()
+
+  const editorContainerRef = useRef<HTMLDivElement>(null)
+  const editorViewRef = useRef<EditorView | null>(null)
+  const isInternalChangeRef = useRef(false)
 
   // Sync state when switching files
   useEffect(() => {
     const draft = getDraft(repoFullName, filePath)
+    let nextContent = initialContent
     if (draft !== null && draft !== initialContent) {
+      nextContent = draft
       setContent(draft)
       setHasRestoredDraft(true)
     } else {
       setContent(initialContent)
       setHasRestoredDraft(false)
     }
+
     const filename = filePath.split("/").pop() || "note.md"
     if (isObsidianVault) {
       setCommitMessage(formatObsidianBackupMessage())
@@ -66,6 +109,19 @@ export function Editor({
     }
     setCommitSuccess(false)
     setError(null)
+    setIsSlashMenuOpen(false)
+
+    // Update CodeMirror document if already initialized
+    if (editorViewRef.current) {
+      const view = editorViewRef.current
+      if (view.state.doc.toString() !== nextContent) {
+        isInternalChangeRef.current = true
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: nextContent },
+        })
+        isInternalChangeRef.current = false
+      }
+    }
   }, [filePath, initialContent, repoFullName, isObsidianVault])
 
   // Is content different from GitHub remote
@@ -81,32 +137,154 @@ export function Editor({
     }
   }
 
-  // Handle Tab key in textarea for clean indentation & Ctrl+S for quick commit
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-      e.preventDefault()
-      if (isDirty && !isCommitting) {
-        handleCommit()
-      }
-      return
+  // Filter slash commands
+  const filteredSlashCommands = useMemo(() => {
+    const q = slashQuery.trim().toLowerCase()
+    if (!q) return SLASH_COMMANDS
+    return SLASH_COMMANDS.filter((cmd) => {
+      return (
+        cmd.title.toLowerCase().includes(q) ||
+        cmd.description.toLowerCase().includes(q) ||
+        cmd.keywords.toLowerCase().includes(q)
+      )
+    })
+  }, [slashQuery])
+
+  // Handle Slash Command Selection
+  const handleSelectSlashCommand = (cmd: SlashCommand) => {
+    const view = editorViewRef.current
+    if (!view) return
+
+    const cursor = view.state.selection.main.head
+    const line = view.state.doc.lineAt(cursor)
+    const textBeforeCursor = line.text.slice(0, cursor - line.from)
+    const slashIdx = textBeforeCursor.lastIndexOf("/")
+
+    if (slashIdx >= 0) {
+      const from = line.from + slashIdx
+      const to = cursor
+      view.dispatch({
+        changes: { from, to, insert: cmd.snippet },
+        selection: {
+          anchor: from + (cmd.cursorOffset !== undefined ? cmd.cursorOffset : cmd.snippet.length),
+        },
+      })
     }
 
-    if (e.key === "Tab") {
-      e.preventDefault()
-      const textarea = textareaRef.current
-      if (!textarea) return
-      const start = textarea.selectionStart
-      const end = textarea.selectionEnd
-      const val = textarea.value
-      const updated = val.substring(0, start) + "  " + val.substring(end)
-      handleContentChange(updated)
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd = start + 2
-      }, 0)
+    setIsSlashMenuOpen(false)
+    setSlashQuery("")
+    view.focus()
+  }
+
+  // Detect slash command at cursor position
+  const checkSlashCommand = (view: EditorView) => {
+    const cursor = view.state.selection.main.head
+    const line = view.state.doc.lineAt(cursor)
+    const textBeforeCursor = line.text.slice(0, cursor - line.from)
+    const slashMatch = textBeforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/)
+
+    if (slashMatch) {
+      setSlashQuery(slashMatch[1])
+      setSelectedSlashIndex(0)
+      setIsSlashMenuOpen(true)
+      const coords = view.coordsAtPos(cursor)
+      if (coords) {
+        setSlashMenuPos({ top: coords.bottom + 6, left: coords.left })
+      }
+    } else {
+      setIsSlashMenuOpen(false)
+      setSlashQuery("")
     }
   }
 
-  // Toggle between Obsidian backup format and custom message
+  // Initialize CodeMirror 6 Continuous Obsidian Editor
+  useEffect(() => {
+    if (!editorContainerRef.current || viewMode !== "edit") return
+
+    // Clean up existing instance if any
+    if (editorViewRef.current) {
+      editorViewRef.current.destroy()
+      editorViewRef.current = null
+    }
+
+    const extensions = createObsidianExtensions({
+      onDocChange: (newDoc) => {
+        if (!isInternalChangeRef.current) {
+          handleContentChange(newDoc)
+        }
+        if (editorViewRef.current) {
+          checkSlashCommand(editorViewRef.current)
+        }
+      },
+      onCursorActivity: (_pos) => {
+        if (editorViewRef.current) {
+          checkSlashCommand(editorViewRef.current)
+        }
+      },
+      onSave: () => {
+        if (isDirty && !isCommitting) {
+          handleCommit()
+        }
+      },
+      onToggleViewMode: () => {
+        setViewMode((prev) => (prev === "edit" ? "read" : "edit"))
+      },
+    })
+
+    const state = EditorState.create({
+      doc: content,
+      extensions,
+    })
+
+    const view = new EditorView({
+      state,
+      parent: editorContainerRef.current,
+    })
+
+    editorViewRef.current = view
+
+    return () => {
+      view.destroy()
+      editorViewRef.current = null
+    }
+  }, [viewMode])
+
+  // Keydown interceptor for slash commands menu
+  const handleEditorKeyDown = (e: KeyboardEvent) => {
+    if (isSlashMenuOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        setSelectedSlashIndex((prev) =>
+          filteredSlashCommands.length > 0 ? (prev + 1) % filteredSlashCommands.length : 0,
+        )
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        setSelectedSlashIndex((prev) =>
+          filteredSlashCommands.length > 0
+            ? (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+            : 0,
+        )
+        return
+      }
+      if (e.key === "Enter") {
+        e.preventDefault()
+        const chosen = filteredSlashCommands[selectedSlashIndex]
+        if (chosen) {
+          handleSelectSlashCommand(chosen)
+        }
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setIsSlashMenuOpen(false)
+        return
+      }
+    }
+  }
+
+  // Toggle Obsidian format
   const toggleObsidianFormat = (enable: boolean) => {
     setUseObsidianFormat(enable)
     if (enable) {
@@ -117,7 +295,7 @@ export function Editor({
     }
   }
 
-  // Commit & Push note to GitHub -> Clear draft on success (never touches .obsidian)
+  // Commit & Push note to GitHub
   const handleCommit = async () => {
     if (!isDirty || isCommitting) return
     setIsCommitting(true)
@@ -127,15 +305,13 @@ export function Editor({
     try {
       const [owner, repo] = repoFullName.split("/")
       const msg =
-        (useObsidianFormat ? formatObsidianBackupMessage() : commitMessage.trim()) ||
-        `Update ${filePath.split("/").pop()}`
+        (useObsidianFormat
+          ? formatObsidianBackupMessage()
+          : commitMessage.trim()) || `Update ${filePath.split("/").pop()}`
 
-      // Strictly commit only the edited note file — never touch .obsidian
       const filesToCommit = [{ path: filePath, content }]
-
       const result = await atomicCommitVault(token, owner, repo, filesToCommit, msg)
 
-      // Clear draft immediately from localStorage to free memory and prevent lag!
       clearDraft(repoFullName, filePath)
       setCommitSuccess(true)
       setHasRestoredDraft(false)
@@ -147,20 +323,24 @@ export function Editor({
     }
   }
 
-  // Render Markdown to Quartz HTML Preview
+  // Render Markdown for Reading Mode
   const previewHtml = useMemo(() => {
-    // Process Obsidian wikilinks: [[link|text]] or [[link]]
-    let parsedText = content.replace(/\[\[(.*?)(?:\|(.*?))?\]\]/g, (_, target, alias) => {
-      const displayText = alias || target
-      return `<a class="internal internal-link" data-slug="${target}" title="${target}">${displayText}</a>`
-    })
+    let parsedText = content.replace(
+      /\[\[(.*?)(?:\|(.*?))?\]\]/g,
+      (_, target, alias) => {
+        const displayText = alias || target
+        return `<a class="internal internal-link" data-slug="${target}" title="${target}">${displayText}</a>`
+      },
+    )
 
-    // Process Obsidian Callouts: > [!NOTE] etc.
+    parsedText = parsedText.replace(/==([^=]+)==/g, "<mark>$1</mark>")
+
     parsedText = parsedText.replace(
       /^>\s*\[!([a-zA-Z]+)\]\s*(.*)$/gm,
       (_, type, title) => {
         const calloutType = type.toLowerCase()
-        const calloutTitle = title || type.charAt(0).toUpperCase() + type.slice(1)
+        const calloutTitle =
+          title || type.charAt(0).toUpperCase() + type.slice(1)
         return `<div class="callout callout-${calloutType}"><div class="callout-title"><strong>${calloutTitle}</strong></div>`
       },
     )
@@ -181,7 +361,7 @@ export function Editor({
 
   return (
     <section class="editor-workspace">
-      {/* Top Editor Toolbar */}
+      {/* Top Editor Header */}
       <div class="editor-header">
         <div class="editor-file-info">
           <span class="editor-filepath">{filePath}</span>
@@ -202,26 +382,28 @@ export function Editor({
         </div>
 
         <div class="editor-controls-right">
-          <div class="editor-mode-selector">
+          {/* Two-State Toggle: Edit (Continuous Obsidian CodeMirror) vs Read (Quartz Article) */}
+          <div class="editor-mode-toggle" role="group" aria-label="View mode toggle">
             <button
-              class={`mode-btn ${viewMode === "edit" ? "active" : ""}`}
+              type="button"
+              class={`mode-toggle-btn ${viewMode === "edit" ? "active" : ""}`}
               onClick={() => setViewMode("edit")}
+              title="Edit Mode: Continuous Obsidian Editor (Ctrl+E)"
             >
-              Edit
+              <EditIcon />
+              <span>Edit</span>
             </button>
             <button
-              class={`mode-btn ${viewMode === "split" ? "active" : ""}`}
-              onClick={() => setViewMode("split")}
+              type="button"
+              class={`mode-toggle-btn ${viewMode === "read" ? "active" : ""}`}
+              onClick={() => setViewMode("read")}
+              title="Read Mode: Reading View (Ctrl+E)"
             >
-              Split
-            </button>
-            <button
-              class={`mode-btn ${viewMode === "preview" ? "active" : ""}`}
-              onClick={() => setViewMode("preview")}
-            >
-              Preview
+              <BookIcon />
+              <span>Read</span>
             </button>
           </div>
+
           {onClose && (
             <button class="btn-close-note" onClick={onClose} title="Close note">
               ✕
@@ -229,6 +411,198 @@ export function Editor({
           )}
         </div>
       </div>
+
+      {/* Quick Formatting Toolbar (Visible in Edit mode) */}
+      {viewMode === "edit" && (
+        <div class="editor-quick-toolbar" role="toolbar" aria-label="Quick formatting toolbar">
+          <div class="toolbar-group">
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "# ")
+              }}
+              title="Heading 1 (#)"
+            >
+              H1
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "## ")
+              }}
+              title="Heading 2 (##)"
+            >
+              H2
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "### ")
+              }}
+              title="Heading 3 (###)"
+            >
+              H3
+            </button>
+          </div>
+
+          <div class="toolbar-divider" />
+
+          <div class="toolbar-group">
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "**", "**", "bold")
+              }}
+              title="Bold (**text**)"
+            >
+              <BoldIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "*", "*", "italic")
+              }}
+              title="Italic (*text*)"
+            >
+              <ItalicIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "~~", "~~", "text")
+              }}
+              title="Strikethrough (~~text~~)"
+            >
+              <StrikethroughIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "==", "==", "highlight")
+              }}
+              title="Highlight (==text==)"
+            >
+              <HighlightIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "`", "`", "code")
+              }}
+              title="Inline Code (`code`)"
+            >
+              <CodeBlockIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) wrapSelection(editorViewRef.current, "[[", "]]", "note")
+              }}
+              title="Wikilink ([[note]])"
+            >
+              <LinkIcon />
+            </button>
+          </div>
+
+          <div class="toolbar-divider" />
+
+          <div class="toolbar-group">
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "- ")
+              }}
+              title="Bulleted List (- item)"
+            >
+              <ListBulletIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "1. ")
+              }}
+              title="Numbered List (1. item)"
+            >
+              1.
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "- [ ] ")
+              }}
+              title="Checklist (- [ ] task)"
+            >
+              <ListCheckIcon />
+            </button>
+          </div>
+
+          <div class="toolbar-divider" />
+
+          <div class="toolbar-group">
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current)
+                  insertSnippet(editorViewRef.current, "> [!NOTE]\n> Note content\n", 10)
+              }}
+              title="Obsidian Callout (> [!NOTE])"
+            >
+              <CalloutIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current)
+                  insertSnippet(
+                    editorViewRef.current,
+                    "| Column 1 | Column 2 |\n| --- | --- |\n| Item 1 | Item 2 |\n",
+                  )
+              }}
+              title="Table"
+            >
+              <TableIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) toggleLinePrefix(editorViewRef.current, "> ")
+              }}
+              title="Quote (> quote)"
+            >
+              <QuoteIcon />
+            </button>
+            <button
+              type="button"
+              class="toolbar-btn"
+              onClick={() => {
+                if (editorViewRef.current) insertSnippet(editorViewRef.current, "---\n")
+              }}
+              title="Divider (---)"
+            >
+              <DividerIcon />
+            </button>
+          </div>
+
+          <div class="toolbar-hint">
+            Type <kbd class="toolbar-kbd">/</kbd> for quick commands
+          </div>
+        </div>
+      )}
 
       {error && (
         <div class="editor-alert editor-alert-error">
@@ -244,24 +618,25 @@ export function Editor({
         </div>
       )}
 
-      {/* Main Split Panels */}
-      <div class={`editor-panes mode-${viewMode}`}>
-        {(viewMode === "edit" || viewMode === "split") && (
-          <div class="pane-editor">
-            <textarea
-              ref={textareaRef}
-              class="markdown-textarea"
-              value={content}
-              onInput={(e) => handleContentChange((e.target as HTMLInputElement).value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Write your Obsidian markdown note here..."
-              spellcheck={false}
-            />
-          </div>
-        )}
+      {/* Main Panes: Edit (Continuous CodeMirror 6) vs Read (Quartz Article) */}
+      <div class={`editor-panes mode-${viewMode}`} onKeyDown={handleEditorKeyDown}>
+        {viewMode === "edit" ? (
+          <div class="codemirror-editor-wrapper">
+            <div ref={editorContainerRef} class="codemirror-container" />
 
-        {(viewMode === "preview" || viewMode === "split") && (
-          <div class="pane-preview">
+            {/* Floating Slash Commands Menu anchored to cursor */}
+            {isSlashMenuOpen && (
+              <SlashCommandsMenu
+                query={slashQuery}
+                selectedIndex={selectedSlashIndex}
+                position={slashMenuPos}
+                onSelect={handleSelectSlashCommand}
+                onClose={() => setIsSlashMenuOpen(false)}
+              />
+            )}
+          </div>
+        ) : (
+          <div class="pane-reading-view">
             <article
               class="quartz-article"
               dangerouslySetInnerHTML={{ __html: previewHtml }}
@@ -316,11 +691,18 @@ export function Editor({
             class="btn-commit-push"
             onClick={handleCommit}
             disabled={!isDirty || isCommitting}
-            title={isDirty ? "Commit and push changes to GitHub (Ctrl+S)" : "No changes to commit"}
+            title={
+              isDirty
+                ? "Commit and push changes to GitHub (Ctrl+S)"
+                : "No changes to commit"
+            }
           >
             {isCommitting ? (
               <>
-                <span class="spinner" style={{ width: "14px", height: "14px" }}></span>
+                <span
+                  class="spinner"
+                  style={{ width: "14px", height: "14px" }}
+                ></span>
                 Pushing...
               </>
             ) : (
@@ -340,4 +722,3 @@ export function Editor({
     </section>
   )
 }
-
