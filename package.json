@@ -1,0 +1,22 @@
+{
+  "name": "zettly-main-auth",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@types/marked": "^5.0.2",
+    "marked": "^18.0.12",
+    "preact": "^10.25.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.9.4",
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  }
+}
