@@ -574,26 +574,109 @@
   align-items: center;
   background: var(--card-bg);
   border-bottom: 1px solid var(--lightgray);
-  padding: 0 1rem;
-  height: 42px;
+  padding: 0 0.5rem;
+  height: 40px;
+  overflow-x: auto;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.obsidian-tab-strip::-webkit-scrollbar {
+  height: 3px;
+}
+
+.obsidian-tab-strip::-webkit-scrollbar-thumb {
+  background: var(--lightgray);
+  border-radius: 2px;
 }
 
 .obsidian-tab-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
+  gap: 0.45rem;
+  font-size: 0.82rem;
   color: var(--darkgray);
-  padding: 0.5rem 1rem;
+  padding: 0.35rem 0.65rem;
   border-bottom: 2px solid transparent;
   font-family: var(--headerFont);
   font-weight: 500;
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.obsidian-tab-item:hover {
+  color: var(--dark);
+  background: var(--highlight);
 }
 
 .obsidian-tab-item.active {
   color: var(--secondary);
   border-bottom-color: var(--secondary);
+  background: var(--light);
   font-weight: 600;
+}
+
+.tab-title {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-draft-dot {
+  color: #f59e0b;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.tab-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--gray);
+  font-size: 0.72rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.5;
+  transition: all 0.15s ease;
+  margin-left: 0.15rem;
+}
+
+.tab-close-btn:hover {
+  background: var(--lightgray);
+  color: var(--dark);
+  opacity: 1;
+}
+
+.obsidian-tab-plus {
+  background: transparent;
+  border: none;
+  color: var(--gray);
+  cursor: pointer;
+  padding: 0.3rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.25rem;
+  transition: all 0.15s ease;
+}
+
+.obsidian-tab-plus:hover {
+  background: var(--highlight);
+  color: var(--secondary);
+}
+
+.obsidian-tab-plus svg {
+  width: 14px;
+  height: 14px;
 }
 
 .obsidian-welcome-actions {
@@ -1415,5 +1498,127 @@
 .btn-refresh-timestamp:hover {
   color: var(--secondary);
   transform: rotate(90deg);
+}
+
+/* Tree Node Hover Actions (Outline / Obsidian inspired) */
+.tree-actions-hover {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.tree-node:hover .tree-actions-hover {
+  display: flex;
+}
+
+.tree-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--gray);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.tree-action-btn:hover {
+  background: var(--lightgray);
+  color: var(--dark);
+}
+
+.tree-action-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Tree Rename Inline Input */
+.tree-rename-input {
+  background: var(--light);
+  border: 1px solid var(--secondary);
+  border-radius: 4px;
+  color: var(--dark);
+  font-family: var(--bodyFont);
+  font-size: 0.85rem;
+  padding: 1px 4px;
+  outline: none;
+  width: 100%;
+}
+
+/* Context Menu (Obsidian & Outline style floating popup) */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  backdrop-filter: blur(8px);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-family: var(--bodyFont);
+  font-weight: 500;
+  color: var(--dark);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.1s ease;
+  width: 100%;
+}
+
+.context-menu-item svg {
+  width: 14px;
+  height: 14px;
+  color: var(--gray);
+  flex-shrink: 0;
+}
+
+.context-menu-item:hover {
+  background: var(--highlight);
+  color: var(--secondary);
+}
+
+.context-menu-item:hover svg {
+  color: var(--secondary);
+}
+
+.context-menu-item.menu-item-danger {
+  color: #ef4444;
+}
+
+.context-menu-item.menu-item-danger svg {
+  color: #ef4444;
+}
+
+.context-menu-item.menu-item-danger:hover {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+[data-theme="dark"] .context-menu-item.menu-item-danger:hover {
+  background: #7f1d1d33;
+  color: #f87171;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--lightgray);
+  margin: 3px 0;
 }
 

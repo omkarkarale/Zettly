@@ -12,6 +12,9 @@ import {
   CopyIcon,
   LinkIcon,
   TrashIcon,
+  NewTabIcon,
+  SplitIcon,
+  ExternalLinkIcon,
 } from "./Icons"
 
 export interface TreeNode {
@@ -27,10 +30,15 @@ interface FileExplorerProps {
   repoFullName: string
   isLoading?: boolean
   onSelectFile: (path: string) => void
+  onOpenInNewTab: (path: string) => void
+  onOpenToRight: (path: string) => void
+  onOpenInNewWindow: (path: string) => void
   onCreateFile: (folderPath: string) => void
-  onRenameFile?: (oldPath: string, newPath: string) => void
-  onDuplicateFile?: (path: string) => void
-  onDeleteFile?: (path: string) => void
+  onCreateFolder: (parentFolderPath: string) => void
+  onRenameFile: (oldPath: string, newPath: string) => void
+  onRenameFolder: (oldFolderPath: string) => void
+  onDeleteFile: (path: string) => void
+  onDeleteFolder: (folderPath: string) => void
   onShowToast?: (message: string, type?: "info" | "success" | "error") => void
 }
 
@@ -166,7 +174,7 @@ function TreeItemView({
           <div class="tree-actions-hover" onClick={(e) => e.stopPropagation()}>
             <button
               class="tree-action-btn"
-              title={`Create note inside ${node.name}`}
+              title={`New file inside ${node.name}`}
               onClick={(e) => {
                 e.stopPropagation()
                 setOpen(true)
@@ -255,7 +263,7 @@ function TreeItemView({
         <div class="tree-actions-hover" onClick={(e) => e.stopPropagation()}>
           <button
             class="tree-action-btn"
-            title="Note options"
+            title="File options"
             onClick={(e) => {
               e.stopPropagation()
               onOpenContextMenu(e, node)
@@ -269,16 +277,22 @@ function TreeItemView({
   )
 }
 
+
 export function FileExplorer({
   tree,
   selectedPath,
   repoFullName,
   isLoading,
   onSelectFile,
+  onOpenInNewTab,
+  onOpenToRight,
+  onOpenInNewWindow,
   onCreateFile,
+  onCreateFolder,
   onRenameFile,
-  onDuplicateFile,
+  onRenameFolder,
   onDeleteFile,
+  onDeleteFolder,
   onShowToast,
 }: FileExplorerProps) {
   const [query, setQuery] = useState("")
@@ -357,13 +371,6 @@ export function FileExplorer({
     <aside class="sidebar-explorer">
       <div class="explorer-header">
         <span class="explorer-title">Explorer</span>
-        <button
-          class="btn-new-note"
-          onClick={() => onCreateFile("")}
-          title="Create New Note in Root"
-        >
-          <PlusIcon /> Note
-        </button>
       </div>
 
       <div class="explorer-search">
@@ -382,7 +389,20 @@ export function FileExplorer({
         )}
       </div>
 
-      <div class="explorer-tree">
+      <div
+        class="explorer-tree"
+        onContextMenu={(e) => {
+          // If right-clicked on empty area of tree
+          if ((e.target as HTMLElement).classList.contains("explorer-tree") || (e.target as HTMLElement).classList.contains("tree-empty")) {
+            e.preventDefault()
+            setContextMenu({
+              x: e.clientX,
+              y: e.clientY,
+              node: { name: "Root", path: "", type: "tree", children: [] },
+            })
+          }
+        }}
+      >
         {isLoading ? (
           <div class="loading-state" style={{ padding: "2rem 1rem" }}>
             <span class="spinner" style={{ borderColor: "var(--secondary)", borderTopColor: "transparent" }}></span>
@@ -412,13 +432,49 @@ export function FileExplorer({
         <div
           class="tree-context-menu"
           style={{
-            top: `${Math.min(contextMenu.y, window.innerHeight - 230)}px`,
+            top: `${Math.min(contextMenu.y, window.innerHeight - 280)}px`,
             left: `${Math.min(contextMenu.x, window.innerWidth - 190)}px`,
           }}
           onClick={(e) => e.stopPropagation()}
         >
           {contextMenu.node.type === "blob" ? (
+            /* File Context Menu */
             <>
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  onOpenInNewTab(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <NewTabIcon />
+                <span>Open in new tab</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  onOpenToRight(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <SplitIcon />
+                <span>Open to right</span>
+              </button>
+
+              <button
+                class="context-menu-item"
+                onClick={() => {
+                  onOpenInNewWindow(contextMenu.node.path)
+                  setContextMenu(null)
+                }}
+              >
+                <ExternalLinkIcon />
+                <span>Open in new window</span>
+              </button>
+
+              <div class="context-menu-divider" />
+
               <button
                 class="context-menu-item"
                 onClick={() => {
@@ -428,17 +484,6 @@ export function FileExplorer({
               >
                 <EditIcon />
                 <span>Rename</span>
-              </button>
-
-              <button
-                class="context-menu-item"
-                onClick={() => {
-                  onDuplicateFile?.(contextMenu.node.path)
-                  setContextMenu(null)
-                }}
-              >
-                <CopyIcon />
-                <span>Duplicate</span>
               </button>
 
               <button
@@ -462,7 +507,7 @@ export function FileExplorer({
                   setContextMenu(null)
                 }}
               >
-                <FileIcon />
+                <CopyIcon />
                 <span>Copy Path</span>
               </button>
 
@@ -471,10 +516,7 @@ export function FileExplorer({
               <button
                 class="context-menu-item menu-item-danger"
                 onClick={() => {
-                  const title = contextMenu.node.name.replace(/\.md$/, "")
-                  if (window.confirm(`Delete "${title}"?`)) {
-                    onDeleteFile?.(contextMenu.node.path)
-                  }
+                  onDeleteFile(contextMenu.node.path)
                   setContextMenu(null)
                 }}
               >
@@ -483,6 +525,7 @@ export function FileExplorer({
               </button>
             </>
           ) : (
+            /* Folder Context Menu */
             <>
               <button
                 class="context-menu-item"
@@ -492,20 +535,67 @@ export function FileExplorer({
                 }}
               >
                 <PlusIcon />
-                <span>New Note Inside</span>
+                <span>New File</span>
               </button>
 
               <button
                 class="context-menu-item"
                 onClick={() => {
-                  navigator.clipboard.writeText(contextMenu.node.path)
-                  onShowToast?.(`✓ Copied folder path to clipboard`, "info")
+                  onCreateFolder(contextMenu.node.path)
                   setContextMenu(null)
                 }}
               >
                 <FolderIcon />
-                <span>Copy Path</span>
+                <span>New Folder</span>
               </button>
+
+              {contextMenu.node.path && (
+                <button
+                  class="context-menu-item"
+                  onClick={() => {
+                    onRenameFolder(contextMenu.node.path)
+                    setContextMenu(null)
+                  }}
+                >
+                  <EditIcon />
+                  <span>Rename</span>
+                </button>
+              )}
+
+              {contextMenu.node.path && (
+                <button
+                  class="context-menu-item"
+                  onClick={() => {
+                    navigator.clipboard.writeText(contextMenu.node.path)
+                    onShowToast?.(`✓ Copied folder path to clipboard`, "info")
+                    setContextMenu(null)
+                  }}
+                >
+                  <CopyIcon />
+                  <span>Copy Path</span>
+                </button>
+              )}
+
+              {contextMenu.node.path && (
+                <>
+                  <div class="context-menu-divider" />
+                  <button
+                    class="context-menu-item menu-item-danger"
+                    onClick={() => {
+                      // Check if folder is not empty
+                      if (contextMenu.node.children && contextMenu.node.children.length > 0) {
+                        onShowToast?.(`Cannot delete "${contextMenu.node.name}": folder is not empty`, "error")
+                      } else {
+                        onDeleteFolder(contextMenu.node.path)
+                      }
+                      setContextMenu(null)
+                    }}
+                  >
+                    <TrashIcon />
+                    <span>Delete</span>
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>

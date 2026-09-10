@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks"
-import { SproutIcon, RepoIcon, SyncIcon, PullIcon } from "./components/Icons"
+import { SproutIcon, RepoIcon, SyncIcon, PullIcon, PlusIcon } from "./components/Icons"
 import { ThemeToggle } from "./components/ThemeToggle"
 import { LoginCard } from "./components/LoginCard"
 import { RepoModal } from "./components/RepoModal"
@@ -17,9 +17,9 @@ import {
   listDraftPaths,
   clearAllDrafts,
   getDraft,
-  saveDraft,
   clearDraft,
   renameDraft,
+  hasDraft,
   formatObsidianBackupMessage,
 } from "./lib/storage"
 import {
@@ -47,9 +47,10 @@ export function App() {
   const [repoTree, setRepoTree] = useState<RepoTreeItem[]>([])
   const [isLoadingTree, setIsLoadingTree] = useState(false)
 
-  // Active File state (starts null: nothing is opened by default)
+  // Active File & Multi-tab state (starts null / empty: nothing is opened by default)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [activeFileData, setActiveFileData] = useState<FileData | null>(null)
+  const [openTabs, setOpenTabs] = useState<string[]>([])
   const [isLoadingFile, setIsLoadingFile] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
 
@@ -143,6 +144,7 @@ export function App() {
   const handleSelectFile = async (path: string) => {
     if (!session || !activeRepo) return
     setSelectedPath(path)
+    setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]))
     setIsLoadingFile(true)
     setFileError(null)
 
@@ -171,6 +173,7 @@ export function App() {
 
     const title = candidate.split("/").pop()?.replace(/\.md$/, "") || "Untitled"
     setSelectedPath(candidate)
+    setOpenTabs((prev) => (prev.includes(candidate) ? prev : [...prev, candidate]))
     setActiveFileData({
       path: candidate,
       content: `# ${title}\n\n`,
@@ -189,6 +192,7 @@ export function App() {
     setRepoTree((prev) =>
       prev.map((t) => (t.path === oldPath ? { ...t, path: newPath } : t)),
     )
+    setOpenTabs((prev) => prev.map((t) => (t === oldPath ? newPath : t)))
     renameDraft(activeRepo, oldPath, newPath)
     refreshDrafts()
 
@@ -200,78 +204,249 @@ export function App() {
     showToast(`✓ Renamed to ${newPath.split("/").pop()}`, "success")
   }
 
-  // 4c. Duplicate Note
-  const handleDuplicateFile = async (sourcePath: string) => {
-    if (!session || !activeRepo) return
-    const [owner, name] = activeRepo.split("/")
+  // 4d. Delete Note (blocked if note is not empty)
+  const handleDeleteFile = async (filePath: string) => {
+    if (!activeRepo) return
+    const fileName = filePath.split("/").pop() || filePath
 
-    const parts = sourcePath.split("/")
-    const oldFileName = parts[parts.length - 1]
-    const baseTitle = oldFileName.replace(/\.md$/, "")
-    const folder = parts.slice(0, -1).join("/")
-
-    let copyTitle = `${baseTitle} (Copy)`
-    let candidate = folder ? `${folder}/${copyTitle}.md` : `${copyTitle}.md`
-    let counter = 2
-    while (repoTree.some((t) => t.path.toLowerCase() === candidate.toLowerCase())) {
-      copyTitle = `${baseTitle} (Copy ${counter})`
-      candidate = folder ? `${folder}/${copyTitle}.md` : `${copyTitle}.md`
-      counter++
-    }
-
-    let fileContent = `# ${copyTitle}\n\n`
-    if (activeFileData && activeFileData.path === sourcePath) {
-      fileContent = activeFileData.content
+    // Check if file is non-empty
+    let content = ""
+    if (activeFileData && activeFileData.path === filePath) {
+      content = activeFileData.content
     } else {
-      const draftContent = getDraft(activeRepo, sourcePath)
-      if (draftContent !== null) {
-        fileContent = draftContent
+      const draft = getDraft(activeRepo, filePath)
+      if (draft !== null) {
+        content = draft
       } else {
-        try {
-          const remoteData = await fetchFileContent(session.token, owner, name, sourcePath)
-          fileContent = remoteData.content
-        } catch {
-          // fallback
+        const treeItem = repoTree.find((t) => t.path === filePath)
+        if (treeItem && treeItem.size !== undefined && treeItem.size > 0) {
+          showToast(`Cannot delete "${fileName}": file is not empty`, "error")
+          return
+        }
+        if (session) {
+          const [owner, name] = activeRepo.split("/")
+          try {
+            const remote = await fetchFileContent(session.token, owner, name, filePath)
+            content = remote.content
+          } catch {
+            content = ""
+          }
         }
       }
     }
 
-    saveDraft(activeRepo, candidate, fileContent)
-    refreshDrafts()
+    if (content.trim().length > 0) {
+      showToast(`Cannot delete "${fileName}": file is not empty. Clear contents first to delete.`, "error")
+      return
+    }
 
-    setRepoTree((prev) => [
-      ...prev,
-      {
-        path: candidate,
-        type: "blob",
-        mode: "100644",
-        sha: "",
-      },
-    ])
+    if (!window.confirm(`Are you sure you want to delete the empty note "${fileName}"?`)) {
+      return
+    }
 
-    setSelectedPath(candidate)
-    setActiveFileData({
-      path: candidate,
-      content: fileContent,
-      sha: "",
-    })
-
-    showToast(`✓ Duplicated as ${copyTitle}`, "success")
-  }
-
-  // 4d. Delete Note
-  const handleDeleteFile = (filePath: string) => {
-    if (!activeRepo) return
     setRepoTree((prev) => prev.filter((t) => t.path !== filePath))
     clearDraft(activeRepo, filePath)
     refreshDrafts()
 
-    if (selectedPath === filePath) {
-      setSelectedPath(null)
-      setActiveFileData(null)
+    setOpenTabs((prev) => {
+      const updated = prev.filter((t) => t !== filePath)
+      if (selectedPath === filePath) {
+        if (updated.length > 0) {
+          const next = updated[updated.length - 1]
+          handleSelectFile(next)
+        } else {
+          setSelectedPath(null)
+          setActiveFileData(null)
+        }
+      }
+      return updated
+    })
+
+    showToast(`✓ Deleted empty note ${fileName}`, "info")
+  }
+
+  // 4e. Delete Folder (blocked if folder is not empty)
+  const handleDeleteFolder = (folderPath: string) => {
+    const folderName = folderPath.split("/").pop() || folderPath
+    const hasChildren = repoTree.some(
+      (item) => item.path.startsWith(folderPath + "/") && item.path !== folderPath
+    )
+
+    if (hasChildren) {
+      showToast(`Cannot delete "${folderName}": folder is not empty`, "error")
+      return
     }
 
-    showToast(`✓ Removed note ${filePath.split("/").pop()}`, "info")
+    if (!window.confirm(`Are you sure you want to delete the empty folder "${folderName}"?`)) {
+      return
+    }
+
+    setRepoTree((prev) =>
+      prev.filter((item) => item.path !== folderPath && !item.path.startsWith(folderPath + "/"))
+    )
+    showToast(`✓ Deleted empty folder "${folderName}"`, "info")
+  }
+
+  // 4f. Rename Folder
+  const handleRenameFolder = (oldFolderPath: string) => {
+    const oldName = oldFolderPath.split("/").pop() || oldFolderPath
+    const newName = window.prompt(`Rename folder "${oldName}" to:`, oldName)
+    if (!newName || !newName.trim() || newName.trim() === oldName) return
+
+    const cleanNewName = newName.trim().replace(/[\/\\]/g, "")
+    const parentParts = oldFolderPath.split("/").slice(0, -1)
+    const newFolderPath = parentParts.length > 0 ? `${parentParts.join("/")}/${cleanNewName}` : cleanNewName
+
+    setRepoTree((prev) =>
+      prev.map((item) => {
+        if (item.path === oldFolderPath) {
+          return { ...item, path: newFolderPath }
+        }
+        if (item.path.startsWith(oldFolderPath + "/")) {
+          return {
+            ...item,
+            path: `${newFolderPath}${item.path.slice(oldFolderPath.length)}`,
+          }
+        }
+        return item
+      })
+    )
+
+    setOpenTabs((prev) =>
+      prev.map((tab) => {
+        if (tab === oldFolderPath) return newFolderPath
+        if (tab.startsWith(oldFolderPath + "/")) {
+          return `${newFolderPath}${tab.slice(oldFolderPath.length)}`
+        }
+        return tab
+      })
+    )
+
+    if (selectedPath && selectedPath.startsWith(oldFolderPath + "/")) {
+      const updatedPath = `${newFolderPath}${selectedPath.slice(oldFolderPath.length)}`
+      setSelectedPath(updatedPath)
+      setActiveFileData((prev) => (prev ? { ...prev, path: updatedPath } : null))
+    }
+
+    showToast(`✓ Renamed folder to "${cleanNewName}"`, "success")
+  }
+
+  // 4g. Create Folder
+  const handleCreateFolder = (parentFolderPath = "") => {
+    const folderName = window.prompt("Enter new folder name:")
+    if (!folderName || !folderName.trim()) return
+
+    const cleanName = folderName.trim().replace(/[\/\\]/g, "")
+    const targetFolder = parentFolderPath ? `${parentFolderPath}/${cleanName}` : cleanName
+
+    handleCreateNewNote(targetFolder)
+    showToast(`✓ Created folder "${cleanName}"`, "success")
+  }
+
+  // 4h. Open in New Tab
+  const handleOpenInNewTab = (path: string) => {
+    setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]))
+    handleSelectFile(path)
+  }
+
+  // 4i. Open to Right
+  const handleOpenToRight = (path: string) => {
+    handleOpenInNewTab(path)
+    showToast(`Opened "${path.split("/").pop()?.replace(/\.md$/, "")}" to the right`, "info")
+  }
+
+  // 4j. Open in New Window
+  const handleOpenInNewWindow = async (path: string) => {
+    let content = ""
+    if (activeFileData && activeFileData.path === path) {
+      content = activeFileData.content
+    } else {
+      const draft = getDraft(activeRepo || "", path)
+      if (draft !== null) {
+        content = draft
+      } else if (session && activeRepo) {
+        const [owner, name] = activeRepo.split("/")
+        try {
+          const remote = await fetchFileContent(session.token, owner, name, path)
+          content = remote.content
+        } catch {
+          content = "# Note\n\n(Could not load remote content)"
+        }
+      }
+    }
+
+    const title = path.split("/").pop()?.replace(/\.md$/, "") || "Note"
+    const newWin = window.open("", "_blank", "width=860,height=700,menubar=no,toolbar=no")
+    if (newWin) {
+      newWin.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>${title} - Zettly</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              line-height: 1.6;
+              padding: 2.5rem;
+              max-width: 800px;
+              margin: 0 auto;
+              background-color: #161618;
+              color: #f4f4f5;
+            }
+            pre {
+              background: #202022;
+              padding: 1.25rem;
+              border-radius: 8px;
+              white-space: pre-wrap;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 14px;
+              border: 1px solid #2e2e32;
+            }
+            h1 { color: #84a59d; font-size: 1.75rem; margin-top: 0; }
+            .header-bar {
+              border-bottom: 1px solid #2e2e32;
+              padding-bottom: 0.75rem;
+              margin-bottom: 1.5rem;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              color: #a0a0a5;
+              font-size: 0.85rem;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header-bar">
+            <span><strong>${path}</strong></span>
+            <span>Zettly Standalone Viewer</span>
+          </div>
+          <h1>${title}</h1>
+          <pre>${content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+        </body>
+        </html>
+      `)
+      newWin.document.close()
+    } else {
+      showToast("Popup blocked. Please allow popups for this site.", "error")
+    }
+  }
+
+  // 4k. Close Tab
+  const handleCloseTab = (tabPath: string, e?: MouseEvent) => {
+    if (e) e.stopPropagation()
+    setOpenTabs((prev) => {
+      const updated = prev.filter((p) => p !== tabPath)
+      if (selectedPath === tabPath) {
+        if (updated.length > 0) {
+          const nextTab = updated[updated.length - 1]
+          handleSelectFile(nextTab)
+        } else {
+          setSelectedPath(null)
+          setActiveFileData(null)
+        }
+      }
+      return updated
+    })
   }
 
   // 5. Quick search / Go to file focus
@@ -305,6 +480,7 @@ export function App() {
     saveStoredRepo(repo.full_name)
     setSelectedPath(null)
     setActiveFileData(null)
+    setOpenTabs([])
   }
 
   // 8. Update state on successful commit from Editor
@@ -423,8 +599,12 @@ export function App() {
   }
 
   const handleCloseActiveNote = () => {
-    setSelectedPath(null)
-    setActiveFileData(null)
+    if (selectedPath) {
+      handleCloseTab(selectedPath)
+    } else {
+      setSelectedPath(null)
+      setActiveFileData(null)
+    }
   }
 
   const handleSignOut = () => {
@@ -434,6 +614,7 @@ export function App() {
     setRepoTree([])
     setSelectedPath(null)
     setActiveFileData(null)
+    setOpenTabs([])
     setDraftCount(0)
   }
 
@@ -564,15 +745,69 @@ export function App() {
             repoFullName={activeRepo}
             isLoading={isLoadingTree}
             onSelectFile={handleSelectFile}
+            onOpenInNewTab={handleOpenInNewTab}
+            onOpenToRight={handleOpenToRight}
+            onOpenInNewWindow={handleOpenInNewWindow}
             onCreateFile={handleCreateNewNote}
+            onCreateFolder={handleCreateFolder}
             onRenameFile={handleRenameFile}
-            onDuplicateFile={handleDuplicateFile}
+            onRenameFolder={handleRenameFolder}
             onDeleteFile={handleDeleteFile}
+            onDeleteFolder={handleDeleteFolder}
             onShowToast={showToast}
           />
 
           {/* Center Column: Editor or Obsidian Default Opening Screen */}
           <section class="quartz-editor-container">
+            {/* Obsidian Multi-Tab Strip */}
+            <div class="obsidian-tab-strip">
+              {openTabs.length === 0 ? (
+                <div class="obsidian-tab-item active">
+                  <span>New tab</span>
+                </div>
+              ) : (
+                openTabs.map((tabPath) => {
+                  const isActive = selectedPath === tabPath
+                  const tabTitle = tabPath.split("/").pop()?.replace(/\.md$/, "") || tabPath
+                  const isDraft = hasDraft(activeRepo, tabPath)
+
+                  return (
+                    <div
+                      key={tabPath}
+                      class={`obsidian-tab-item ${isActive ? "active" : ""}`}
+                      onClick={() => handleSelectFile(tabPath)}
+                      title={tabPath}
+                    >
+                      <span class="tab-title">{tabTitle}</span>
+                      {isDraft && (
+                        <span class="tab-draft-dot" title="Unsaved changes in buffer">
+                          ●
+                        </span>
+                      )}
+                      <button
+                        class="tab-close-btn"
+                        title="Close tab"
+                        onClick={(e) => handleCloseTab(tabPath, e)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )
+                })
+              )}
+
+              <button
+                class="obsidian-tab-plus"
+                title="New tab (Obsidian welcome)"
+                onClick={() => {
+                  setSelectedPath(null)
+                  setActiveFileData(null)
+                }}
+              >
+                <PlusIcon />
+              </button>
+            </div>
+
             {isLoadingFile ? (
               <div class="editor-loading-state">
                 <span class="spinner" style={{ borderColor: "var(--secondary)", borderTopColor: "transparent" }}></span>
@@ -582,7 +817,7 @@ export function App() {
               <div class="alert-box alert-error" style={{ margin: "2rem" }}>
                 <strong>Error:</strong> {fileError}
               </div>
-            ) : activeFileData ? (
+            ) : activeFileData && selectedPath ? (
               <Editor
                 key={activeFileData.path}
                 repoFullName={activeRepo}
@@ -597,12 +832,6 @@ export function App() {
             ) : (
               /* Obsidian Default Opening State */
               <div class="obsidian-default-state">
-                <div class="obsidian-tab-strip">
-                  <div class="obsidian-tab-item active">
-                    <span>New tab</span>
-                  </div>
-                </div>
-
                 <div class="obsidian-welcome-actions">
                   <button class="obsidian-action-row" onClick={() => handleCreateNewNote()}>
                     <span class="action-text">Create new note</span>
