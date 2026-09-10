@@ -1,8 +1,18 @@
+html, body {
+  height: 100%;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 /* App Layout Root */
 .app-layout-root {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
   background-color: var(--light);
 }
 
@@ -14,8 +24,7 @@
   padding: 0.75rem 1.5rem;
   border-bottom: 1px solid var(--lightgray);
   background-color: var(--card-bg);
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 50;
 }
 
@@ -187,6 +196,8 @@
   display: grid;
   grid-template-columns: 280px 1fr 240px;
   height: calc(100vh - 58px);
+  max-height: calc(100vh - 58px);
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -452,12 +463,18 @@
   flex-direction: column;
   background: var(--light);
   overflow: hidden;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
 }
 
 .editor-workspace {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  flex: 1;
 }
 
 .editor-header {
@@ -844,6 +861,7 @@
 /* Editor Panes */
 .editor-panes {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -853,11 +871,13 @@
 .editor-panes.mode-edit,
 .editor-panes.mode-read {
   height: 100%;
+  min-height: 0;
 }
 
 /* Continuous CodeMirror 6 Obsidian Editor */
 .codemirror-editor-wrapper {
   flex: 1;
+  min-height: 0;
   height: 100%;
   overflow: hidden;
   position: relative;
@@ -868,6 +888,7 @@
 
 .codemirror-container {
   flex: 1;
+  min-height: 0;
   height: 100%;
   overflow: hidden;
 }
@@ -878,7 +899,45 @@
 }
 
 .codemirror-container .cm-scroller {
-  overflow-y: auto;
+  height: 100%;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease;
+}
+
+/* Hideable / Auto-hiding Scrollbar just for Editor (CodeMirror & Reading View) */
+.codemirror-container .cm-scroller::-webkit-scrollbar,
+.pane-reading-view::-webkit-scrollbar {
+  width: 6px;
+}
+
+.codemirror-container .cm-scroller::-webkit-scrollbar-track,
+.pane-reading-view::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.codemirror-container .cm-scroller::-webkit-scrollbar-thumb,
+.pane-reading-view::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.25s ease;
+}
+
+/* Scrollbar fades in smoothly when hovering over the editor canvas or when scrolling */
+.codemirror-editor-wrapper:hover .cm-scroller::-webkit-scrollbar-thumb,
+.pane-reading-view:hover::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+}
+
+.codemirror-container .cm-scroller::-webkit-scrollbar-thumb:hover,
+.pane-reading-view::-webkit-scrollbar-thumb:hover {
+  background: var(--gray);
+}
+
+.codemirror-editor-wrapper:hover .cm-scroller,
+.pane-reading-view:hover {
+  scrollbar-color: var(--card-border) transparent;
 }
 
 :root {
@@ -894,8 +953,9 @@
 /* Reading View */
 .pane-reading-view {
   flex: 1;
+  min-height: 0;
   height: 100%;
-  overflow-y: auto;
+  overflow-y: auto !important;
   padding: 2rem 2.5rem;
   background: var(--light);
 }
