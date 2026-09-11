@@ -116,6 +116,15 @@ function TreeItemView({
   const isDraft = hasDraft(repoFullName, node.path)
   const isRenaming = renamingPath === node.path
 
+  // Auto-expand folder if selected file is inside it
+  useEffect(() => {
+    if (selectedPath && node.type === "tree") {
+      if (selectedPath.startsWith(node.path + "/")) {
+        setOpen(true)
+      }
+    }
+  }, [selectedPath, node.path, node.type])
+
   const [renameText, setRenameText] = useState(node.name.replace(/\.md$/, ""))
   const renameInputRef = useRef<HTMLInputElement>(null)
 

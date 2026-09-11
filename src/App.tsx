@@ -1,4 +1,4 @@
-import { useState, useEffect } from "preact/hooks"
+import { useState, useEffect, useRef } from "preact/hooks"
 import { SproutIcon, RepoIcon, PlusIcon } from "./components/Icons"
 import { ThemeToggle } from "./components/ThemeToggle"
 import { LoginCard } from "./components/LoginCard"
@@ -17,11 +17,13 @@ import {
   listDraftPaths,
   clearAllDrafts,
   getDraft,
+  saveDraft,
   clearDraft,
   renameDraft,
   hasDraft,
   formatObsidianBackupMessage,
   listPendingDeletions,
+  setPendingDeletions,
   addPendingDeletion,
   clearPendingDeletion,
   clearAllPendingDeletions,
@@ -135,8 +137,29 @@ export function App() {
       checkIsObsidianVault(session.token, owner, name),
     ])
       .then(([tree, isVault]) => {
-        setRepoTree(tree)
+        // Sanitize pending deletions: only keep deletions for files that actually exist as blobs on remote
+        const remoteBlobs = new Set(tree.filter((t) => t.type === "blob").map((t) => t.path))
+        const rawPending = listPendingDeletions(activeRepo)
+        const validPending = rawPending.filter((p) => remoteBlobs.has(p))
+        setPendingDeletions(activeRepo, validPending)
+
+        // Include any local drafts not yet in remote tree so they appear in FileExplorer
+        const drafts = listDraftPaths(activeRepo)
+        const combinedTree = [...tree]
+        for (const d of drafts) {
+          if (!combinedTree.some((t) => t.path === d)) {
+            combinedTree.push({
+              path: d,
+              mode: "100644",
+              type: "blob",
+              sha: "draft",
+            })
+          }
+        }
+
+        setRepoTree(combinedTree)
         setIsObsidianVault(isVault)
+        refreshDrafts()
         // Nothing is auto-opened: selectedPath and activeFileData remain null
       })
       .catch((err) => {
@@ -179,11 +202,32 @@ export function App() {
     }
 
     const title = candidate.split("/").pop()?.replace(/\.md$/, "") || "Untitled"
+    const initialContent = `# ${title}\n\n`
+
+    // 1. Buffer draft immediately in localStorage
+    if (activeRepo) {
+      saveDraft(activeRepo, candidate, initialContent)
+      refreshDrafts()
+    }
+
+    // 2. Showcase immediately in FileExplorer by updating repoTree
+    const newItem: RepoTreeItem = {
+      path: candidate,
+      mode: "100644",
+      type: "blob",
+      sha: "draft",
+    }
+    setRepoTree((prev) => {
+      if (prev.some((t) => t.path === candidate)) return prev
+      return [...prev, newItem]
+    })
+
+    // 3. Open in active tabs & editor
     setSelectedPath(candidate)
     setOpenTabs((prev) => (prev.includes(candidate) ? prev : [...prev, candidate]))
     setActiveFileData({
       path: candidate,
-      content: `# ${title}\n\n`,
+      content: initialContent,
       sha: "",
     })
   }
@@ -218,6 +262,10 @@ export function App() {
       }
     }
 
+    // Check if oldPath actually existed on remote GitHub
+    const oldTreeItem = repoTree.find((t) => t.path === oldPath)
+    const isOldOnRemote = Boolean(oldTreeItem && oldTreeItem.sha && oldTreeItem.sha !== "draft")
+
     // 2. Update local UI state immediately
     setRepoTree((prev) =>
       prev.map((t) => (t.path === oldPath ? { ...t, path: newPath } : t)),
@@ -228,32 +276,44 @@ export function App() {
       setActiveFileData((prev) => (prev ? { ...prev, path: newPath, content } : null))
     }
 
-    // 3. Move draft and record pending deletion of oldPath
+    // 3. Move draft and record pending deletion if previously on remote
     renameDraft(activeRepo, oldPath, newPath)
-    addPendingDeletion(activeRepo, oldPath)
+    saveDraft(activeRepo, newPath, content)
+    clearDraft(activeRepo, oldPath)
+
+    if (isOldOnRemote) {
+      addPendingDeletion(activeRepo, oldPath)
+    } else {
+      clearPendingDeletion(activeRepo, oldPath)
+    }
     refreshDrafts()
 
     // 4. Directly sync rename to GitHub if session active
     if (session) {
       const [owner, name] = activeRepo.split("/")
       try {
+        const filesToCommit: AtomicFile[] = []
+        if (isOldOnRemote) {
+          filesToCommit.push({ path: oldPath, sha: null })
+        }
+        filesToCommit.push({ path: newPath, content })
+
         await atomicCommitVault(
           session.token,
           owner,
           name,
-          [
-            { path: oldPath, sha: null },
-            { path: newPath, content },
-          ],
+          filesToCommit,
           `rename: ${oldName} -> ${newName}`,
         )
-        clearPendingDeletion(activeRepo, oldPath)
+        if (isOldOnRemote) {
+          clearPendingDeletion(activeRepo, oldPath)
+        }
         clearDraft(activeRepo, newPath)
         refreshDrafts()
         const freshTree = await fetchRepoTree(session.token, owner, name)
         setRepoTree(freshTree)
         showToast(`✓ Renamed to ${newName} & synced with Git`, "success")
-      } catch {
+      } catch (err: any) {
         showToast(`Renamed to ${newName} (queued for next Git Sync)`, "info")
       }
     } else {
@@ -301,6 +361,9 @@ export function App() {
       return
     }
 
+    const treeItem = repoTree.find((t) => t.path === filePath)
+    const isRemote = Boolean(treeItem && treeItem.sha && treeItem.sha !== "draft")
+
     // 1. Update local UI state immediately
     setRepoTree((prev) => prev.filter((t) => t.path !== filePath))
     clearDraft(activeRepo, filePath)
@@ -318,12 +381,16 @@ export function App() {
       return updated
     })
 
-    // 2. Buffer pending deletion for Git
-    addPendingDeletion(activeRepo, filePath)
+    // 2. Buffer pending deletion ONLY if it actually existed on remote
+    if (isRemote) {
+      addPendingDeletion(activeRepo, filePath)
+    } else {
+      clearPendingDeletion(activeRepo, filePath)
+    }
     refreshDrafts()
 
-    // 3. Directly sync deletion to GitHub if session active
-    if (session) {
+    // 3. Directly sync deletion to GitHub if session active and was on remote
+    if (isRemote && session) {
       const [owner, name] = activeRepo.split("/")
       try {
         await atomicCommitVault(
@@ -367,9 +434,9 @@ export function App() {
       prev.filter((item) => item.path !== folderPath && !item.path.startsWith(folderPath + "/"))
     )
 
-    // 2. Collect any placeholder items on remote to delete
+    // 2. Collect any placeholder blobs on remote to delete (only blobs, never directory trees)
     const filesToDelete = repoTree
-      .filter((item) => item.path === folderPath || item.path.startsWith(folderPath + "/"))
+      .filter((item) => item.type === "blob" && item.path.startsWith(folderPath + "/"))
       .map((item) => item.path)
 
     for (const p of filesToDelete) {
@@ -607,20 +674,37 @@ export function App() {
     }
   }
 
-  // 9. Git Pull from GitHub (refreshes tree and active file, preserving local pending deletions)
-  const handlePull = async () => {
+  // 9. Git Pull from GitHub (refreshes tree and active file, preserving local pending deletions & drafts)
+  const handlePull = async (silent = false) => {
     if (!session || !activeRepo || isPulling || isSyncing) return
     setIsPulling(true)
     const [owner, name] = activeRepo.split("/")
 
     try {
       const tree = await fetchRepoTree(session.token, owner, name)
-      const pendingDeletions = listPendingDeletions(activeRepo)
-      // Never revive pending deletions on pull
-      const safeTree = tree.filter((t) => !pendingDeletions.includes(t.path))
+      // Sanitize pending deletions: only keep deletions for items present on remote
+      const remoteBlobPaths = new Set(tree.filter((t) => t.type === "blob").map((t) => t.path))
+      const rawPending = listPendingDeletions(activeRepo)
+      const validPending = rawPending.filter((d) => remoteBlobPaths.has(d))
+      setPendingDeletions(activeRepo, validPending)
+
+      // Never revive pending deletions on pull, and keep local drafts in tree
+      const draftPaths = listDraftPaths(activeRepo)
+      const safeTree = tree.filter((t) => !validPending.includes(t.path))
+      for (const d of draftPaths) {
+        if (!safeTree.some((t) => t.path === d)) {
+          safeTree.push({
+            path: d,
+            mode: "100644",
+            type: "blob",
+            sha: "draft",
+          })
+        }
+      }
       setRepoTree(safeTree)
 
-      if (selectedPath) {
+      // Only refresh active file if user doesn't have an unsaved local draft for it
+      if (selectedPath && !hasDraft(activeRepo, selectedPath)) {
         try {
           const freshData = await fetchFileContent(session.token, owner, name, selectedPath)
           setActiveFileData(freshData)
@@ -629,32 +713,68 @@ export function App() {
         }
       }
       refreshDrafts()
-      showToast("✓ Pulled latest vault changes from GitHub", "success")
+      if (!silent) {
+        showToast("✓ Pulled latest vault changes from GitHub", "success")
+      }
     } catch (err: any) {
-      showToast(`Pull failed: ${err.message || "Network error"}`, "error")
+      if (!silent) {
+        showToast(`Pull failed: ${err.message || "Network error"}`, "error")
+      }
     } finally {
       setIsPulling(false)
     }
   }
 
   // 10. Git Commit & Sync (Obsidian Vault Workflow - commits drafts AND pending deletions)
-  const handleFullSync = async () => {
+  const handleFullSync = async (isAuto = false) => {
     if (!session || !activeRepo || isSyncing || isPulling) return
     setIsSyncing(true)
     const [owner, name] = activeRepo.split("/")
 
     try {
-      const draftPaths = listDraftPaths(activeRepo)
-      const pendingDeletions = listPendingDeletions(activeRepo)
+      // 1. Fetch current remote tree to sanitize pending deletions against actual remote blobs
+      let currentRemoteTree: RepoTreeItem[] = []
+      try {
+        currentRemoteTree = await fetchRepoTree(session.token, owner, name)
+      } catch {
+        // network issue fallback
+      }
 
-      if (draftPaths.length === 0 && pendingDeletions.length === 0) {
+      const remoteBlobPaths = new Set(
+        currentRemoteTree.filter((t) => t.type === "blob").map((t) => t.path),
+      )
+
+      // 2. Sanitize pending deletions: prune any path not present on remote
+      const rawPendingDeletions = listPendingDeletions(activeRepo)
+      const validDeletions = rawPendingDeletions.filter((d) => remoteBlobPaths.has(d))
+      setPendingDeletions(activeRepo, validDeletions)
+
+      const draftPaths = listDraftPaths(activeRepo)
+
+      if (draftPaths.length === 0 && validDeletions.length === 0) {
         // No pending changes -> pull latest remote changes
-        await handlePull()
-        showToast("✓ Vault is already up to date with remote", "info")
+        if (!isAuto) {
+          await handlePull(false)
+          showToast("✓ Vault is already up to date with remote", "info")
+        } else {
+          // In auto-sync, silently refresh tree and clean files
+          if (currentRemoteTree.length > 0) {
+            setRepoTree(currentRemoteTree)
+            if (selectedPath && !hasDraft(activeRepo, selectedPath)) {
+              try {
+                const fresh = await fetchFileContent(session.token, owner, name, selectedPath)
+                setActiveFileData(fresh)
+              } catch {
+                // file may not exist remotely yet
+              }
+            }
+          }
+          refreshDrafts()
+        }
         return
       }
 
-      // Collect all modified files from drafts
+      // 3. Collect modified files from drafts
       const filesToCommit: AtomicFile[] = []
       for (const p of draftPaths) {
         const draftContent = getDraft(activeRepo, p)
@@ -663,12 +783,17 @@ export function App() {
         }
       }
 
-      // Collect all pending deletions (sha: null tells GitHub to remove them from tree)
-      for (const d of pendingDeletions) {
+      // 4. Collect verified remote pending deletions
+      for (const d of validDeletions) {
         filesToCommit.push({ path: d, sha: null })
       }
 
-      // Commit strictly the draft note files and deletions — never touch .obsidian
+      if (filesToCommit.length === 0) {
+        refreshDrafts()
+        return
+      }
+
+      // Commit strictly the draft note files and deletions in Obsidian format — never touch .obsidian
       const backupMsg = formatObsidianBackupMessage()
       const result = await atomicCommitVault(
         session.token,
@@ -699,13 +824,40 @@ export function App() {
         }
       }
 
-      showToast(`✓ Vault Synced: pushed ${filesToCommit.length} change(s)!`, "success")
+      showToast(
+        isAuto
+          ? `✓ Auto-synced: pushed ${filesToCommit.length} change(s) to GitHub`
+          : `✓ Vault Synced: pushed ${filesToCommit.length} change(s)!`,
+        "success",
+      )
     } catch (err: any) {
-      showToast(`Sync failed: ${err.message || "Network error"}`, "error")
+      if (!isAuto) {
+        showToast(`Sync failed: ${err.message || "Network error"}`, "error")
+      } else {
+        console.warn("Auto-sync error:", err)
+      }
     } finally {
       setIsSyncing(false)
     }
   }
+
+  // 11. 1-Minute Auto Pull/Push/Sync
+  const isSyncingRef = useRef(false)
+  const isPullingRef = useRef(false)
+  isSyncingRef.current = isSyncing
+  isPullingRef.current = isPulling
+
+  useEffect(() => {
+    if (!session || !activeRepo) return
+
+    const intervalId = setInterval(() => {
+      if (!isSyncingRef.current && !isPullingRef.current) {
+        handleFullSync(true)
+      }
+    }, 60000) // 1 minute break
+
+    return () => clearInterval(intervalId)
+  }, [session?.token, activeRepo])
 
   const handleCloseActiveNote = () => {
     if (selectedPath) {

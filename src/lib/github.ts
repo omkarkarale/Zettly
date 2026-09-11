@@ -127,17 +127,41 @@ export async function fetchRepoTree(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
     { headers: ghHeaders(token) },
   )
-  if (!res.ok) {
-    const fallback = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/git/trees/master?recursive=1`,
-      { headers: ghHeaders(token) },
-    )
-    if (!fallback.ok) throw new Error("Could not fetch file tree")
+  if (res.ok) {
+    const data = await res.json()
+    return data.tree || []
+  }
+
+  const fallback = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/master?recursive=1`,
+    { headers: ghHeaders(token) },
+  )
+  if (fallback.ok) {
     const data = await fallback.json()
     return data.tree || []
   }
-  const data = await res.json()
-  return data.tree || []
+
+  // Final fallback: discover default branch from repository metadata
+  try {
+    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: ghHeaders(token),
+    })
+    if (repoRes.ok) {
+      const repoData = await repoRes.json()
+      if (repoData.default_branch && repoData.default_branch !== branch && repoData.default_branch !== "master") {
+        const defaultBranchRes = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/trees/${repoData.default_branch}?recursive=1`,
+          { headers: ghHeaders(token) },
+        )
+        if (defaultBranchRes.ok) {
+          const data = await defaultBranchRes.json()
+          return data.tree || []
+        }
+      }
+    }
+  } catch {}
+
+  throw new Error("Could not fetch file tree")
 }
 
 // 6. Fetch single file content
@@ -161,43 +185,91 @@ export async function fetchFileContent(
 }
 
 // 7. Get Branch Head (for atomic commit parent)
+// 7. Get Branch Head (for atomic commit parent with dynamic branch discovery)
 export async function getBranchHead(
   token: string,
   owner: string,
   repo: string,
-  branch = "main",
-): Promise<{ commitSha: string; baseTreeSha: string }> {
-  let refRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branch}`,
-    { headers: ghHeaders(token) },
-  )
+  preferredBranch?: string,
+): Promise<{ commitSha: string; baseTreeSha: string; branch: string }> {
+  // Candidate branch names to test in priority order
+  const candidates: string[] = []
+  if (preferredBranch) candidates.push(preferredBranch)
 
-  if (!refRes.ok && branch === "main") {
-    // Try master branch fallback
-    refRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/master`,
-      { headers: ghHeaders(token) },
+  // 1. Fetch repo metadata to discover the true default_branch from GitHub
+  try {
+    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: ghHeaders(token),
+    })
+    if (repoRes.ok) {
+      const repoData = await repoRes.json()
+      if (repoData.default_branch && !candidates.includes(repoData.default_branch)) {
+        candidates.push(repoData.default_branch)
+      }
+    }
+  } catch (e) {
+    console.warn("Could not fetch repo metadata for branch discovery", e)
+  }
+
+  // Common branch fallbacks
+  if (!candidates.includes("main")) candidates.push("main")
+  if (!candidates.includes("master")) candidates.push("master")
+
+  // 2. Try each candidate branch
+  let matchedRefData: any = null
+  let resolvedBranch = ""
+
+  for (const b of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${b}`,
+        { headers: ghHeaders(token) },
+      )
+      if (res.ok) {
+        matchedRefData = await res.json()
+        resolvedBranch = b
+        break
+      }
+    } catch {}
+  }
+
+  // 3. If candidates not matched, query all existing heads in repo
+  if (!matchedRefData) {
+    try {
+      const refsRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/matching-refs/heads`,
+        { headers: ghHeaders(token) },
+      )
+      if (refsRes.ok) {
+        const refsList = await refsRes.json()
+        if (Array.isArray(refsList) && refsList.length > 0) {
+          matchedRefData = refsList[0]
+          resolvedBranch = refsList[0].ref.replace(/^refs\/heads\//, "")
+        }
+      }
+    } catch {}
+  }
+
+  if (!matchedRefData || !matchedRefData.object?.sha) {
+    throw new Error(
+      `Could not resolve branch head for ${owner}/${repo}. Checked branches: ${candidates.join(", ")}`,
     )
   }
 
-  if (!refRes.ok) {
-    throw new Error(`Could not fetch git head for branch ${branch}`)
-  }
-
-  const refData = await refRes.json()
-  const commitSha = refData.object.sha
+  const commitSha = matchedRefData.object.sha
 
   // Get commit tree
   const commitRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/git/commits/${commitSha}`,
     { headers: ghHeaders(token) },
   )
-  if (!commitRes.ok) throw new Error("Could not fetch base commit")
+  if (!commitRes.ok) throw new Error(`Could not fetch base commit for ${commitSha}`)
   const commitData = await commitRes.json()
 
   return {
     commitSha,
     baseTreeSha: commitData.tree.sha,
+    branch: resolvedBranch,
   }
 }
 
@@ -208,15 +280,58 @@ export async function atomicCommitVault(
   repo: string,
   files: AtomicFile[],
   message: string,
-  branch = "main",
-): Promise<{ commitSha: string; treeSha: string }> {
-  // Step 1: Fetch current remote branch head
-  const { commitSha, baseTreeSha } = await getBranchHead(token, owner, repo, branch)
+  branch?: string,
+): Promise<{ commitSha: string; treeSha: string; branch: string }> {
+  // Step 1: Dynamically resolve current remote branch head
+  const { commitSha, baseTreeSha, branch: resolvedBranch } = await getBranchHead(token, owner, repo, branch)
 
-  // Step 2: Create a new Tree including all changed files and deletions
+  // Step 1.5: If there are deletions, verify them against the remote base tree
+  // to avoid GitRPC::BadObjectState caused by deleting non-existent files or tree/directory objects
+  let filesToProcess = files
+  const deletions = files.filter((f) => f.sha === null || f.content === undefined)
+  if (deletions.length > 0) {
+    try {
+      const treeRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees/${baseTreeSha}?recursive=1`,
+        { headers: ghHeaders(token) },
+      )
+      if (treeRes.ok) {
+        const treeData = await treeRes.json()
+        const remoteBlobs = new Set<string>(
+          (treeData.tree || [])
+            .filter((item: any) => item.type === "blob")
+            .map((item: any) => item.path),
+        )
+        // Keep file modifications, and ONLY keep deletions that actually exist as blobs on remote
+        filesToProcess = files.filter((f) => {
+          const isDel = f.sha === null || f.content === undefined
+          if (isDel) {
+            return remoteBlobs.has(f.path)
+          }
+          return true
+        })
+      }
+    } catch (e) {
+      console.warn("Could not verify remote base tree for deletions", e)
+    }
+  }
+
+  // Deduplicate files by path (last entry wins)
+  const fileMap = new Map<string, AtomicFile>()
+  for (const f of filesToProcess) {
+    fileMap.set(f.path, f)
+  }
+  const deduplicatedFiles = Array.from(fileMap.values())
+
+  if (deduplicatedFiles.length === 0) {
+    // Nothing changed on remote
+    return { commitSha, treeSha: baseTreeSha, branch: resolvedBranch }
+  }
+
+  // Step 2: Create a new Tree including all changed files and verified deletions
   const treeBody = {
     base_tree: baseTreeSha,
-    tree: files.map((f) => {
+    tree: deduplicatedFiles.map((f) => {
       if (f.sha === null || f.content === undefined) {
         return {
           path: f.path,
@@ -273,7 +388,7 @@ export async function atomicCommitVault(
 
   // Step 4: Update branch reference (Fast-forward push)
   let updateRefRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`,
+    `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${resolvedBranch}`,
     {
       method: "PATCH",
       headers: {
@@ -287,25 +402,31 @@ export async function atomicCommitVault(
     },
   )
 
-  if (!updateRefRes.ok && branch === "main") {
-    // Try master if main ref update failed
-    updateRefRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/master`,
+  // If PATCH failed with 422 or 404 (e.g. Reference does not exist), try POST to create the reference
+  if (!updateRefRes.ok) {
+    const createRefRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/refs`,
       {
-        method: "PATCH",
+        method: "POST",
         headers: {
           ...ghHeaders(token),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          ref: `refs/heads/${resolvedBranch}`,
           sha: commitData.sha,
-          force: false,
         }),
       },
     )
-  }
 
-  if (!updateRefRes.ok) {
+    if (createRefRes.ok) {
+      return {
+        commitSha: commitData.sha,
+        treeSha: treeData.sha,
+        branch: resolvedBranch,
+      }
+    }
+
     const err = await updateRefRes.json().catch(() => ({}))
     throw new Error(err.message || "Failed to push commit reference to GitHub branch")
   }
@@ -313,6 +434,7 @@ export async function atomicCommitVault(
   return {
     commitSha: commitData.sha,
     treeSha: treeData.sha,
+    branch: resolvedBranch,
   }
 }
 

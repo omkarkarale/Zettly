@@ -170,6 +170,14 @@ export function listPendingDeletions(repoFullName: string): string[] {
   }
 }
 
+export function setPendingDeletions(repoFullName: string, paths: string[]): void {
+  try {
+    localStorage.setItem(getDeletionKey(repoFullName), JSON.stringify(paths))
+  } catch (e) {
+    console.warn("Failed to set pending deletions", e)
+  }
+}
+
 export function addPendingDeletion(repoFullName: string, filePath: string): void {
   try {
     const current = listPendingDeletions(repoFullName)
